@@ -1,0 +1,37 @@
+{
+  "MasterUser": {
+    "authenticate_mode": "MasterUser",
+    "tenant_id": "<tenant-id>",
+    "client_id": "<entra-app-registration-client-id>",
+    "client_secret": "",
+    "authority": "https://login.microsoftonline.com/organizations",
+    "scope": [
+      "https://analysis.windows.net/powerbi/api/App.Read.All",
+      "https://analysis.windows.net/powerbi/api/Report.Read.All",
+      "https://analysis.windows.net/powerbi/api/Dashboard.Read.All",
+      "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
+      "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
+      "https://analysis.windows.net/powerbi/api/Tenant.Read.All"
+    ]
+  },
+  "ServicePrincipal": {
+    "authenticate_mode": "ServicePrincipal",
+    "tenant_id": "<tenant-id>",
+    "client_id": "<service-principal-client-id>",
+    "client_secret": "",
+    "authority": "https://login.microsoftonline.com/organizations",
+    "scope": [
+      "https://analysis.windows.net/powerbi/api/.default"
+    ]
+  },
+  "ServicePrincipal-Admin": {
+    "authenticate_mode": "ServicePrincipal-Admin",
+    "tenant_id": "<tenant-id>",
+    "client_id": "<service-principal-admin-client-id>",
+    "client_secret": "",
+    "authority": "https://login.microsoftonline.com/organizations",
+    "scope": [
+      "https://analysis.windows.net/powerbi/api/.default"
+    ]
+  }
+}
