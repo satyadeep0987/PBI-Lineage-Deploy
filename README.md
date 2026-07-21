@@ -55,27 +55,37 @@ References:
 
 The deploy app can read configuration from three places:
 
-1. Environment variables or root-level Streamlit secrets.
-2. Streamlit secrets sections such as `[openai_measure_definitions]`.
+1. Streamlit Cloud secrets, preferably the `[powerbi]` TOML section shown below.
+2. Environment variables or root-level Streamlit secrets such as `PBI_TENANT_ID`.
 3. Local JSON files, for local-only development.
 
 For Streamlit Cloud, use secrets instead of committing filled JSON files.
 
 ### Power BI Auth
 
-Use root-level secrets in Streamlit Cloud:
+Paste this into **Streamlit Community Cloud > App settings > Secrets**:
 
 ```toml
-PBI_AUTH_FLOW = "device_code"
-PBI_TENANT_ID = "<tenant-id>"
-PBI_CLIENT_ID = "<entra-app-registration-client-id>"
-PBI_AUTHORITY = "https://login.microsoftonline.com/organizations"
-PBI_SCOPES = "https://analysis.windows.net/powerbi/api/App.Read.All https://analysis.windows.net/powerbi/api/Report.Read.All https://analysis.windows.net/powerbi/api/Dashboard.Read.All https://analysis.windows.net/powerbi/api/Dataset.Read.All https://analysis.windows.net/powerbi/api/Workspace.Read.All https://analysis.windows.net/powerbi/api/Tenant.Read.All"
+[powerbi]
+auth_flow = "device_code"
+tenant_id = "<tenant-id>"
+client_id = "<entra-app-registration-client-id>"
+authority = "https://login.microsoftonline.com/<tenant-id>"
+scopes = [
+  "https://analysis.windows.net/powerbi/api/App.Read.All",
+  "https://analysis.windows.net/powerbi/api/Report.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dashboard.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
+  "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
+  "https://analysis.windows.net/powerbi/api/Tenant.Read.All",
+]
 ```
 
-`PBI_AUTH_FLOW = "device_code"` is the default for this deploy package. The user clicks sign in, opens Microsoft device login, enters the shown code, and then returns to the app.
+`auth_flow = "device_code"` is the default for this deploy package. The user clicks sign in, opens Microsoft device login, enters the shown code, and then returns to the app.
 
-Your Entra App Registration should allow public client/device-code sign-in and have the delegated Power BI API permissions needed by your workspace reports.
+The deploy app also accepts root-level names like `PBI_TENANT_ID`, `PBI_CLIENT_ID`, `PBI_AUTHORITY`, and `PBI_SCOPES`.
+
+Your Entra App Registration should allow public client/device-code sign-in and have the delegated Power BI API permissions needed by your workspace reports. The default MasterUser login does not require a client secret.
 
 ### App Settings
 

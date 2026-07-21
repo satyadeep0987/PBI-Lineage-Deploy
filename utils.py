@@ -203,14 +203,105 @@ class Utils:
         return [item.strip() for item in raw.split() if item.strip()]
 
     @staticmethod
-    def _env_config(auth_mode: str) -> Dict[str, Any]:
-        # MasterUser is the primary supported mode in the latest app.
+    def _auth_mode_prefix(auth_mode: str) -> str:
         prefix_map = {
             "masteruser": "PBI_MASTER_USER",
             "serviceprincipal": "PBI_SERVICE_PRINCIPAL",
             "serviceprincipal-admin": "PBI_SERVICE_PRINCIPAL_ADMIN",
         }
-        prefix = prefix_map.get(auth_mode.lower(), "PBI_MASTER_USER")
+        return prefix_map.get(str(auth_mode or "").lower(), "PBI_MASTER_USER")
+
+    @staticmethod
+    def _auth_mode_section_names(auth_mode: str) -> List[str]:
+        mode_key_map = {
+            "masteruser": ["MasterUser", "masteruser", "master_user"],
+            "serviceprincipal": ["ServicePrincipal", "serviceprincipal", "service_principal"],
+            "serviceprincipal-admin": [
+                "ServicePrincipal-Admin",
+                "serviceprincipal-admin",
+                "service_principal_admin",
+            ],
+        }
+        return mode_key_map.get(str(auth_mode or "").lower(), [str(auth_mode or "")])
+
+    @staticmethod
+    def _auth_secret_aliases(auth_mode: str) -> Dict[str, List[str]]:
+        prefix = Utils._auth_mode_prefix(auth_mode)
+        return {
+            "authenticate_mode": [
+                f"{prefix}_AUTHENTICATE_MODE",
+                "PBI_AUTHENTICATE_MODE",
+                "AUTHENTICATE_MODE",
+                "authenticate_mode",
+                "auth_mode",
+            ],
+            "tenant_id": [
+                f"{prefix}_TENANT_ID",
+                "PBI_TENANT_ID",
+                "TENANT_ID",
+                "tenant_id",
+                "tenant",
+            ],
+            "client_id": [
+                f"{prefix}_CLIENT_ID",
+                "PBI_CLIENT_ID",
+                "CLIENT_ID",
+                "client_id",
+                "client",
+            ],
+            "client_secret": [
+                f"{prefix}_CLIENT_SECRET",
+                "PBI_CLIENT_SECRET",
+                "CLIENT_SECRET",
+                "client_secret",
+                "clientSecret",
+            ],
+            "authority": [
+                f"{prefix}_AUTHORITY",
+                "PBI_AUTHORITY",
+                "AUTHORITY",
+                "authority",
+            ],
+            "scope": [
+                f"{prefix}_SCOPES",
+                f"{prefix}_SCOPE",
+                "PBI_SCOPES",
+                "PBI_SCOPE",
+                "SCOPES",
+                "SCOPE",
+                "scopes",
+                "scope",
+            ],
+        }
+
+    @staticmethod
+    def _normalize_auth_secret_values(source: Any, auth_mode: str) -> Dict[str, Any]:
+        if not isinstance(source, dict):
+            return {}
+
+        normalized_source = {str(key).lower(): value for key, value in source.items()}
+        config: Dict[str, Any] = {}
+        for config_key, aliases in Utils._auth_secret_aliases(auth_mode).items():
+            value = None
+            found = False
+            for alias in aliases:
+                if alias in source:
+                    value = source[alias]
+                    found = True
+                    break
+                alias_key = alias.lower()
+                if alias_key in normalized_source:
+                    value = normalized_source[alias_key]
+                    found = True
+                    break
+            if found:
+                config[config_key] = Utils._split_scopes(value) if config_key == "scope" else value
+        return config
+
+    @staticmethod
+    def _env_config(auth_mode: str) -> Dict[str, Any]:
+        # MasterUser is the primary supported mode in the latest app.
+        prefix = Utils._auth_mode_prefix(auth_mode)
         default_authority = "https://login.microsoftonline.com/organizations"
         return {
             "authenticate_mode": os.getenv(f"{prefix}_AUTHENTICATE_MODE", auth_mode),
@@ -238,48 +329,31 @@ class Utils:
     def _streamlit_auth_config(auth_mode: str) -> Dict[str, Any]:
         """Read optional auth config from Streamlit root secrets and [powerbi] sections."""
         secrets = Utils._load_streamlit_secrets()
-        prefix_map = {
-            "masteruser": "PBI_MASTER_USER",
-            "serviceprincipal": "PBI_SERVICE_PRINCIPAL",
-            "serviceprincipal-admin": "PBI_SERVICE_PRINCIPAL_ADMIN",
-        }
-        prefix = prefix_map.get(auth_mode.lower(), "PBI_MASTER_USER")
-        merged: Dict[str, Any] = {}
-        root_secret_keys = {
-            "authenticate_mode": [f"{prefix}_AUTHENTICATE_MODE", "PBI_AUTHENTICATE_MODE"],
-            "tenant_id": [f"{prefix}_TENANT_ID", "PBI_TENANT_ID"],
-            "client_id": [f"{prefix}_CLIENT_ID", "PBI_CLIENT_ID"],
-            "client_secret": [f"{prefix}_CLIENT_SECRET", "PBI_CLIENT_SECRET"],
-            "authority": [f"{prefix}_AUTHORITY", "PBI_AUTHORITY"],
-            "scope": [f"{prefix}_SCOPES", "PBI_SCOPES"],
-        }
-        for config_key, secret_keys in root_secret_keys.items():
-            for secret_key in secret_keys:
-                if secret_key in secrets:
-                    value = secrets.get(secret_key)
-                    merged[config_key] = Utils._split_scopes(value) if config_key == "scope" else value
-                    break
+        merged: Dict[str, Any] = Utils._normalize_auth_secret_values(secrets, auth_mode)
+
+        for key in Utils._auth_mode_section_names(auth_mode):
+            value = secrets.get(key)
+            if isinstance(value, dict):
+                merged = Utils._deep_merge(
+                    merged,
+                    Utils._normalize_auth_secret_values(value, auth_mode),
+                )
 
         powerbi = secrets.get("powerbi")
         if not isinstance(powerbi, dict):
             return merged
 
-        mode_key_map = {
-            "masteruser": ["MasterUser", "masteruser", "master_user"],
-            "serviceprincipal": ["ServicePrincipal", "serviceprincipal", "service_principal"],
-            "serviceprincipal-admin": [
-                "ServicePrincipal-Admin",
-                "serviceprincipal-admin",
-                "service_principal_admin",
-            ],
-        }
-        for key, value in powerbi.items():
-            if not isinstance(value, dict):
-                merged[key] = value
-        for key in mode_key_map.get(auth_mode.lower(), [auth_mode]):
+        merged = Utils._deep_merge(
+            merged,
+            Utils._normalize_auth_secret_values(powerbi, auth_mode),
+        )
+        for key in Utils._auth_mode_section_names(auth_mode):
             value = powerbi.get(key)
             if isinstance(value, dict):
-                merged = Utils._deep_merge(merged, value)
+                merged = Utils._deep_merge(
+                    merged,
+                    Utils._normalize_auth_secret_values(value, auth_mode),
+                )
         return merged
 
     @staticmethod
@@ -308,7 +382,8 @@ class Utils:
         if missing:
             return (
                 f"Missing Power BI auth config for {auth_mode}: {', '.join(missing)}. "
-                "Set environment variables or create config/powerbi_auth_config.json from the template."
+                "In Streamlit Cloud, add secrets such as PBI_TENANT_ID and PBI_CLIENT_ID, "
+                "or use a [powerbi] section with tenant_id and client_id."
             )
 
         return config

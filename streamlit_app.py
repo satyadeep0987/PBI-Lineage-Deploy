@@ -88,13 +88,25 @@ _DEVICE_FLOW_STATE_KEY = "msal_device_flow"
 _GENERIC_AAD_AUTHORITY_TENANTS = {"common", "organizations", "consumers"}
 
 
+def _streamlit_secret_value(*keys):
+    try:
+        value = st.secrets
+        for key in keys:
+            if not hasattr(value, "get") or key not in value:
+                return None
+            value = value.get(key)
+        return value
+    except Exception:
+        return None
+
+
 def _use_device_code_auth():
     """Use device-code auth by default in the deploy package."""
-    secret_auth_flow = None
-    try:
-        secret_auth_flow = st.secrets.get("PBI_AUTH_FLOW")
-    except Exception:
-        secret_auth_flow = None
+    secret_auth_flow = (
+        _streamlit_secret_value("PBI_AUTH_FLOW")
+        or _streamlit_secret_value("powerbi", "PBI_AUTH_FLOW")
+        or _streamlit_secret_value("powerbi", "auth_flow")
+    )
     auth_flow = str(os.getenv("PBI_AUTH_FLOW") or secret_auth_flow or "device_code").strip().lower()
     return auth_flow in {"device", "device_code", "device-code", "cloud"}
 
