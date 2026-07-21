@@ -17,6 +17,7 @@ Runtime requirements:
 
 from __future__ import annotations
 
+import platform
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 
@@ -31,8 +32,16 @@ class AdoComConnection:
             import pythoncom  # type: ignore
             import win32com.client  # type: ignore
         except Exception as exc:  # pragma: no cover - Windows-only dependency
+            if platform.system() != "Windows":
+                raise RuntimeError(
+                    "XMLA mode uses Windows COM through pywin32 and the Microsoft MSOLAP provider. "
+                    "Streamlit Community Cloud runs on Linux, so pywin32 cannot be installed or used there. "
+                    "Use REST-based features on Streamlit Cloud, or run XMLA lineage on a Windows host with "
+                    "pywin32 and MSOLAP installed."
+                ) from exc
             raise RuntimeError(
-                "pywin32 is required for XMLA mode. Install it with: pip install pywin32"
+                "pywin32 is required for XMLA mode. Install it with: pip install pywin32, "
+                "and make sure the Microsoft Analysis Services OLE DB Provider is installed."
             ) from exc
 
         self._pythoncom = pythoncom

@@ -5,3 +5,4 @@ msal>=1.28
 openpyxl>=3.1
 xlsxwriter>=3.2
 snowflake-connector-python>=3.12
+pywin32>=306; platform_system == "Windows"

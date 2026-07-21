@@ -137,9 +137,11 @@ streamlit run streamlit_app.py
 
 Before running locally, fill either `.streamlit/secrets.toml` or local JSON config files.
 
+On Windows, `requirements.txt` installs `pywin32` through a platform-specific marker. XMLA lineage also requires the Microsoft Analysis Services OLE DB Provider (MSOLAP) on the machine.
+
 ## Important Cloud Limitations
 
-Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. XMLA-dependent semantic lineage features may not work on Community Cloud until that connector is replaced with a Linux-compatible XMLA approach or moved behind a Windows backend.
+Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. `pywin32` cannot be installed or used on Streamlit Community Cloud, so XMLA-dependent semantic lineage features require either a Windows deployment host or a separate Windows backend service. Do not add unqualified `pywin32` to `requirements.txt` for Streamlit Cloud because Linux dependency installation will fail.
 
 REST-based Power BI inventory, report/app listing, CSV downloads, manual layout uploads, OpenAI measure explanations, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access.
 
