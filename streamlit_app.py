@@ -1,5 +1,13 @@
 ﻿import streamlit as st
 import time
+import os
+
+from tls_trust import configure_tls_trust, format_request_exception
+
+
+_TLS_TRUST_CONFIG = configure_tls_trust()
+
+
 import msal
 import requests
 import pandas as pd
@@ -11,7 +19,6 @@ import io
 import json
 import html
 import hashlib
-import os
 import streamlit.components.v1 as components
 from xmla_ado_com import connect_xmla
 from pathlib import PurePosixPath
@@ -2643,7 +2650,7 @@ def _get_with_auth_fallback(url, auth_headers, timeout=60):
                 "source_name": url.split("/")[-1].split("?")[0] or "GET",
                 "status_code": "ERROR",
                 "error_code": type(e).__name__,
-                "error_message": str(e),
+                "error_message": format_request_exception(e, _TLS_TRUST_CONFIG),
                 "error_body": "",
                 "is_premium_files_error": False,
             })
@@ -2715,7 +2722,10 @@ def get_report_page_metadata_only(headers, workspace_id, report_id, status, erro
             "Report ID": report_id,
             "Metadata Source": "REST fallback",
             "Status": status,
-            "Error Detail": f"{error_detail} | Page fallback failed: {str(e)}",
+            "Error Detail": (
+                f"{error_detail} | Page fallback failed: "
+                f"{format_request_exception(e, _TLS_TRUST_CONFIG)}"
+            ),
         }]
 
 
@@ -2781,7 +2791,7 @@ def _download_report_layout_package(auth_headers, workspace_id, report_id):
                     "source_name": source_name,
                     "status_code": "ERROR",
                     "error_code": type(e).__name__,
-                    "error_message": str(e),
+                    "error_message": format_request_exception(e, _TLS_TRUST_CONFIG),
                     "error_body": "",
                     "is_premium_files_error": False,
                 })
@@ -2828,7 +2838,7 @@ def get_report_visual_usage(headers, workspace_id, report_id, fabric_headers=Non
             )
             return _parse_fabric_report_definition(definition_payload, report_id)
         except Exception as exc:
-            fabric_error = str(exc)
+            fabric_error = format_request_exception(exc, _TLS_TRUST_CONFIG)
 
     try:
         package_bytes, metadata_source, export_error = _download_report_layout_package(headers, workspace_id, report_id)
@@ -2916,7 +2926,7 @@ def get_report_visual_usage(headers, workspace_id, report_id, fabric_headers=Non
             workspace_id,
             report_id,
             "System Error",
-            str(e),
+            format_request_exception(e, _TLS_TRUST_CONFIG),
         )
 
 

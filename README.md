@@ -144,6 +144,23 @@ Before running locally, fill either `.streamlit/secrets.toml` or local JSON conf
 
 On Windows, `requirements.txt` installs `pywin32` through a platform-specific marker. XMLA lineage also requires the Microsoft Analysis Services OLE DB Provider (MSOLAP) on the machine.
 
+### TLS Certificate Errors on Windows
+
+The app uses the operating system certificate store through `truststore`. After moving the app to another machine, install the complete requirements before starting Streamlit:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+If the machine is behind an HTTPS-inspecting corporate proxy, install the organization's root CA in the Windows **Trusted Root Certification Authorities** store. When that is not possible, obtain the approved PEM CA chain from your network/security team and set it before starting the app:
+
+```powershell
+$env:PBI_CA_BUNDLE = "C:\certificates\organization-ca-chain.pem"
+.\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
+```
+
+`REQUESTS_CA_BUNDLE` is also supported. Do not work around certificate errors with `verify=False`; that disables server identity verification.
+
 ## Important Cloud Limitations
 
 Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. `pywin32` cannot be installed or used on Streamlit Community Cloud, so XMLA-dependent semantic lineage features require either a Windows deployment host or a separate Windows backend service. Do not add unqualified `pywin32` to `requirements.txt` for Streamlit Cloud because Linux dependency installation will fail.

@@ -27,6 +27,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlsplit, urlunsplit
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from tls_trust import configure_tls_trust, format_request_exception
+
+
+TLS_TRUST_CONFIG = configure_tls_trust()
+
+
 import msal
 import requests
 
@@ -221,7 +231,7 @@ def _acquire_fabric_token(auth_mode: str, config: Dict[str, Any]) -> str:
 
 
 def _sanitize_error(error: BaseException, protected_values: Iterable[str]) -> str:
-    message = str(error)
+    message = format_request_exception(error, TLS_TRUST_CONFIG)
     for protected in protected_values:
         secret = str(protected or "")
         if secret:
