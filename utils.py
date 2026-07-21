@@ -236,11 +236,33 @@ class Utils:
 
     @staticmethod
     def _streamlit_auth_config(auth_mode: str) -> Dict[str, Any]:
-        """Read optional auth config from [powerbi] Streamlit secrets sections."""
+        """Read optional auth config from Streamlit root secrets and [powerbi] sections."""
         secrets = Utils._load_streamlit_secrets()
+        prefix_map = {
+            "masteruser": "PBI_MASTER_USER",
+            "serviceprincipal": "PBI_SERVICE_PRINCIPAL",
+            "serviceprincipal-admin": "PBI_SERVICE_PRINCIPAL_ADMIN",
+        }
+        prefix = prefix_map.get(auth_mode.lower(), "PBI_MASTER_USER")
+        merged: Dict[str, Any] = {}
+        root_secret_keys = {
+            "authenticate_mode": [f"{prefix}_AUTHENTICATE_MODE", "PBI_AUTHENTICATE_MODE"],
+            "tenant_id": [f"{prefix}_TENANT_ID", "PBI_TENANT_ID"],
+            "client_id": [f"{prefix}_CLIENT_ID", "PBI_CLIENT_ID"],
+            "client_secret": [f"{prefix}_CLIENT_SECRET", "PBI_CLIENT_SECRET"],
+            "authority": [f"{prefix}_AUTHORITY", "PBI_AUTHORITY"],
+            "scope": [f"{prefix}_SCOPES", "PBI_SCOPES"],
+        }
+        for config_key, secret_keys in root_secret_keys.items():
+            for secret_key in secret_keys:
+                if secret_key in secrets:
+                    value = secrets.get(secret_key)
+                    merged[config_key] = Utils._split_scopes(value) if config_key == "scope" else value
+                    break
+
         powerbi = secrets.get("powerbi")
         if not isinstance(powerbi, dict):
-            return {}
+            return merged
 
         mode_key_map = {
             "masteruser": ["MasterUser", "masteruser", "master_user"],
@@ -251,7 +273,6 @@ class Utils:
                 "service_principal_admin",
             ],
         }
-        merged: Dict[str, Any] = {}
         for key, value in powerbi.items():
             if not isinstance(value, dict):
                 merged[key] = value

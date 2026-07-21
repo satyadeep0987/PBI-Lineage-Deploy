@@ -85,12 +85,36 @@ clientapp_mu = None
 clientapp_sp = None
 clientapp_spa = None
 _DEVICE_FLOW_STATE_KEY = "msal_device_flow"
+_GENERIC_AAD_AUTHORITY_TENANTS = {"common", "organizations", "consumers"}
 
 
 def _use_device_code_auth():
     """Use device-code auth by default in the deploy package."""
-    auth_flow = os.getenv("PBI_AUTH_FLOW", "device_code").strip().lower()
+    secret_auth_flow = None
+    try:
+        secret_auth_flow = st.secrets.get("PBI_AUTH_FLOW")
+    except Exception:
+        secret_auth_flow = None
+    auth_flow = str(os.getenv("PBI_AUTH_FLOW") or secret_auth_flow or "device_code").strip().lower()
     return auth_flow in {"device", "device_code", "device-code", "cloud"}
+
+
+def _tenant_specific_authority(authority, tenant_id):
+    """Return an Entra authority URL that includes a concrete tenant when available."""
+    authority = str(authority or "").strip().rstrip("/")
+    tenant_id = str(tenant_id or "").strip()
+    if not authority or not tenant_id:
+        return authority
+
+    authority_parts = authority.split("/")
+    if authority_parts[-1].lower() in _GENERIC_AAD_AUTHORITY_TENANTS:
+        authority_parts[-1] = tenant_id
+        return "/".join(authority_parts)
+
+    if authority.lower() in {"https://login.microsoftonline.com", "http://login.microsoftonline.com"}:
+        return f"{authority}/{tenant_id}"
+
+    return authority
 
 
 def _clear_device_flow_state():
@@ -185,6 +209,7 @@ def get_access_token(auth_mode, prompt_behavior="select_account"):
 
     try:
         if authenticate_mode.lower() == 'masteruser':
+            authority = _tenant_specific_authority(authority, tenant_id)
             clientapp = msal.PublicClientApplication(client_id=client_id, authority=authority)
             if _use_device_code_auth():
                 response = _acquire_master_user_device_token(clientapp, scope)
@@ -200,7 +225,7 @@ def get_access_token(auth_mode, prompt_behavior="select_account"):
                     # Streamlit/session state before this call.
                     response = clientapp.acquire_token_interactive(scopes=scope)
         else:
-            authority = authority.replace('organizations', tenant_id)
+            authority = _tenant_specific_authority(authority, tenant_id)
             clientapp = msal.ConfidentialClientApplication(client_id, client_credential=client_secret, authority=authority)
             response = clientapp.acquire_token_for_client(scopes=scope)
 
@@ -261,7 +286,7 @@ def get_confidential_client_auth_header(auth_mode):
         raise RuntimeError("MasterUser uses the existing delegated interactive login token.")
 
     tenant_id = config_result["tenant_id"]
-    authority = str(config_result["authority"]).replace("organizations", tenant_id)
+    authority = _tenant_specific_authority(config_result["authority"], tenant_id)
     client_id = config_result["client_id"]
     client_secret = config_result.get("client_secret")
     scope = config_result["scope"]

@@ -136,7 +136,7 @@ REST-based Power BI inventory, report/app listing, CSV downloads, manual layout 
 ## Git Push
 
 ```powershell
-cd C:\Users\Administrator\Desktop\PBI-Lineage\deploy
+cd C:\Users\Administrator\Desktop\PBI-Lineage-Deploy
 git init
 git add .
 git commit -m "Prepare Streamlit Cloud deployment"
