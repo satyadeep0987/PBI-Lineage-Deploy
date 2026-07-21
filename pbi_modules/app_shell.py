@@ -416,6 +416,8 @@ def render_direct_measure_lookup_page(
     get_workspace_inventory,
     get_artifacts,
     render_measure_source_lineage_view,
+    render_report_layout_view,
+    render_visual_source_lookup_view,
     safe_widget_key,
     logout_and_clear_session,
     clear_streamlit_session_state,
@@ -485,11 +487,43 @@ def render_direct_measure_lookup_page(
         unsafe_allow_html=True,
     )
 
+    report_key = safe_widget_key(context.get("Report ID"))
+    scope_key = f"direct_measure_{report_key}"
     xmla_token = st.session_state.auth_bundle["spa"]
-    render_measure_source_lineage_view(
-        [context],
-        headersSPA,
-        xmla_token,
-        f"direct_measure_lookup_{safe_widget_key(context.get('Report ID'))}",
-        "direct_measure_lookup_download",
-    )
+    lineage_tab, visual_details_tab, visual_item_lineage_tab = st.tabs([
+        "Lineage Analysis",
+        "Visual Details",
+        "Visual Item Lineage",
+    ])
+
+    with lineage_tab:
+        render_measure_source_lineage_view(
+            [context],
+            headersSPA,
+            xmla_token,
+            f"direct_measure_lookup_{report_key}",
+            f"direct_measure_lookup_download_{report_key}",
+        )
+
+    with visual_details_tab:
+        st.write("### Visual Details")
+        st.caption("Retrieve the report definition and inspect its pages, visuals, and semantic fields.")
+        render_report_layout_view(
+            [context],
+            scope_key,
+            f"direct_measure_report_layout_download_{report_key}",
+            powerbi_headers=headersSPA,
+        )
+
+    with visual_item_lineage_tab:
+        st.write("### Visual Item Lineage")
+        st.caption("Join each report visual item to its semantic object and source database lineage.")
+        render_visual_source_lookup_view(
+            [context],
+            headersSPA,
+            headersSP,
+            xmla_token,
+            scope_key,
+            scope_key,
+            f"direct_measure_visual_lineage_download_{report_key}",
+        )

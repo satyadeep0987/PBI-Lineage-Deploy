@@ -9363,6 +9363,8 @@ if workflow_mode == "direct_measure":
         get_workspace_inventory=get_workspace_inventory,
         get_artifacts=get_artifacts,
         render_measure_source_lineage_view=render_measure_source_lineage_view,
+        render_report_layout_view=render_upload_only_report_layout_view,
+        render_visual_source_lookup_view=render_visual_source_lookup_view,
         safe_widget_key=_safe_widget_key,
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
