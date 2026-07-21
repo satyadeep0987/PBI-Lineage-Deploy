@@ -50,6 +50,8 @@ References:
 - <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/file-organization>
 - <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies>
 - <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management>
+- <https://learn.microsoft.com/en-us/rest/api/fabric/report/items/get-report-definition>
+- <https://learn.microsoft.com/en-us/rest/api/fabric/articles/scopes>
 
 ## Configuration Model
 
@@ -79,13 +81,16 @@ scopes = [
   "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
   "https://analysis.windows.net/powerbi/api/Tenant.Read.All",
 ]
+fabric_scopes = [
+  "https://api.fabric.microsoft.com/Report.ReadWrite.All",
+]
 ```
 
 `auth_flow = "device_code"` is the default for this deploy package. The user clicks sign in, opens Microsoft device login, enters the shown code, and then returns to the app.
 
 The deploy app also accepts root-level names like `PBI_TENANT_ID`, `PBI_CLIENT_ID`, `PBI_AUTHORITY`, and `PBI_SCOPES`.
 
-Your Entra App Registration should allow public client/device-code sign-in and have the delegated Power BI API permissions needed by your workspace reports. The default MasterUser login does not require a client secret.
+Your Entra App Registration should allow public client/device-code sign-in and have the delegated Power BI API permissions needed by your workspace reports. Grant delegated `Report.ReadWrite.All` consent for the Fabric API so the app can call Get Report Definition. Keep Fabric scopes separate from the Power BI scopes because the APIs use different token audiences. The default MasterUser login does not require a client secret.
 
 ### App Settings
 
@@ -143,7 +148,7 @@ On Windows, `requirements.txt` installs `pywin32` through a platform-specific ma
 
 Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. `pywin32` cannot be installed or used on Streamlit Community Cloud, so XMLA-dependent semantic lineage features require either a Windows deployment host or a separate Windows backend service. Do not add unqualified `pywin32` to `requirements.txt` for Streamlit Cloud because Linux dependency installation will fail.
 
-REST-based Power BI inventory, report/app listing, CSV downloads, manual layout uploads, OpenAI measure explanations, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access.
+REST-based Power BI inventory, report/app listing, Fabric report-definition retrieval, visual-layout parsing, CSV downloads, manual layout uploads, OpenAI measure explanations, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access. Report definitions use `api.fabric.microsoft.com` and do not require Windows, `pywin32`, MSOLAP, or full PBIX download permission.
 
 ## Git Push
 

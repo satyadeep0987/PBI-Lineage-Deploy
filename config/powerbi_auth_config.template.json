@@ -12,6 +12,9 @@
       "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
       "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
       "https://analysis.windows.net/powerbi/api/Tenant.Read.All"
+    ],
+    "fabric_scope": [
+      "https://api.fabric.microsoft.com/Report.ReadWrite.All"
     ]
   },
   "ServicePrincipal": {
@@ -22,6 +25,9 @@
     "authority": "https://login.microsoftonline.com/organizations",
     "scope": [
       "https://analysis.windows.net/powerbi/api/.default"
+    ],
+    "fabric_scope": [
+      "https://api.fabric.microsoft.com/.default"
     ]
   },
   "ServicePrincipal-Admin": {
@@ -32,6 +38,9 @@
     "authority": "https://login.microsoftonline.com/organizations",
     "scope": [
       "https://analysis.windows.net/powerbi/api/.default"
+    ],
+    "fabric_scope": [
+      "https://api.fabric.microsoft.com/.default"
     ]
   }
 }

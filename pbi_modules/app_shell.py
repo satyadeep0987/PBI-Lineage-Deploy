@@ -247,6 +247,7 @@ def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
                 "Report ID": report.get("id"),
                 "Dataset ID": report.get("datasetId"),
                 "Report Type": report.get("reportType"),
+                "Report Format": report.get("format"),
                 "Embed URL": report.get("embedUrl"),
             })
 
@@ -403,6 +404,7 @@ def direct_report_context(record):
         "Dataset ID": record.get("Dataset ID"),
         "Target Workspace ID": record.get("Workspace ID"),
         "Report Type": record.get("Report Type"),
+        "Report Format": record.get("Report Format"),
     }
 
 

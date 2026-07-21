@@ -4,6 +4,7 @@ import msal
 import requests
 import pandas as pd
 from utils import Utils
+import base64
 import re
 import zipfile
 import io
@@ -13,6 +14,7 @@ import hashlib
 import os
 import streamlit.components.v1 as components
 from xmla_ado_com import connect_xmla
+from pathlib import PurePosixPath
 from urllib.parse import quote
 from pbi_modules.app_shell import (
     check_authenticated_session,
@@ -85,7 +87,10 @@ clientapp_mu = None
 clientapp_sp = None
 clientapp_spa = None
 _DEVICE_FLOW_STATE_KEY = "msal_device_flow"
+_FABRIC_DEVICE_FLOW_STATE_KEY = "msal_fabric_device_flow"
 _GENERIC_AAD_AUTHORITY_TENANTS = {"common", "organizations", "consumers"}
+_FABRIC_API_BASE_URL = "https://api.fabric.microsoft.com/v1"
+_DEFAULT_FABRIC_REPORT_SCOPES = ["https://api.fabric.microsoft.com/Report.ReadWrite.All"]
 
 
 def _streamlit_secret_value(*keys):
@@ -131,6 +136,27 @@ def _tenant_specific_authority(authority, tenant_id):
 
 def _clear_device_flow_state():
     st.session_state.pop(_DEVICE_FLOW_STATE_KEY, None)
+
+
+def _fabric_scopes(config_result=None):
+    configured = (config_result or {}).get("fabric_scope") if isinstance(config_result, dict) else None
+    scopes = Utils._split_scopes(configured)
+    return scopes or list(_DEFAULT_FABRIC_REPORT_SCOPES)
+
+
+def _try_acquire_fabric_token_silent(clientapp, config_result=None):
+    """Use the signed-in user's MSAL cache to obtain the separate Fabric audience token."""
+    if not clientapp:
+        return None, "The MasterUser MSAL client is unavailable."
+
+    last_error = "No signed-in account was found in the MSAL cache."
+    for account in clientapp.get_accounts() or []:
+        response = clientapp.acquire_token_silent(scopes=_fabric_scopes(config_result), account=account)
+        if response and response.get("access_token"):
+            return response, None
+        if response:
+            last_error = response.get("error_description") or response.get("error") or last_error
+    return None, last_error
 
 
 def _render_device_flow_instructions(flow):
@@ -269,12 +295,20 @@ def get_all_tokens(prompt_behavior="select_account"):
             return None
         mu_resp, clientapp_mu = token_result
         master_token = mu_resp['access_token']
+        config_result = Utils.validate_config("MasterUser")
+        fabric_resp, fabric_error = _try_acquire_fabric_token_silent(
+            clientapp_mu,
+            config_result if isinstance(config_result, dict) else None,
+        )
 
         data = {
             "auth_mode": "MasterUserOnly",
             "mu": master_token,
             "sp": master_token,
             "spa": master_token,
+            "fabric": (fabric_resp or {}).get("access_token"),
+            "fabric_error": fabric_error,
+            "fabric_expires_at": time.time() + (fabric_resp or {}).get('expires_in', 0),
             "expires_at": time.time() + mu_resp.get('expires_in', 3599),
             "login_time": time.time(),
             "clientapp_mu": clientapp_mu,
@@ -285,6 +319,116 @@ def get_all_tokens(prompt_behavior="select_account"):
     except Exception as e:
         st.error(f"Login failed: {e}")
         return None
+
+
+def _store_fabric_token_response(response, error=None):
+    bundle = dict(st.session_state.get("auth_bundle") or {})
+    if response and response.get("access_token"):
+        bundle["fabric"] = response["access_token"]
+        bundle["fabric_expires_at"] = time.time() + response.get("expires_in", 3599)
+        bundle["fabric_error"] = None
+    elif error:
+        bundle["fabric_error"] = str(error)
+    st.session_state.auth_bundle = bundle
+
+
+def _fabric_headers_from_session():
+    """Return a valid Fabric API header, refreshing silently from the MasterUser cache when possible."""
+    bundle = st.session_state.get("auth_bundle") or {}
+    token = str(bundle.get("fabric") or "").strip()
+    expires_at = float(bundle.get("fabric_expires_at") or 0)
+    if token and expires_at > time.time() + 30:
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    config_result = Utils.validate_config("MasterUser")
+    response, error = _try_acquire_fabric_token_silent(
+        bundle.get("clientapp_mu"),
+        config_result if isinstance(config_result, dict) else None,
+    )
+    _store_fabric_token_response(response, error)
+    if response and response.get("access_token"):
+        return {
+            "Authorization": f"Bearer {response['access_token']}",
+            "Content-Type": "application/json",
+        }
+    return None
+
+
+def _new_fabric_device_flow():
+    config_result = Utils.validate_config("MasterUser")
+    if isinstance(config_result, str):
+        raise RuntimeError(config_result)
+    authority = _tenant_specific_authority(config_result["authority"], config_result["tenant_id"])
+    clientapp = msal.PublicClientApplication(client_id=config_result["client_id"], authority=authority)
+    flow = clientapp.initiate_device_flow(scopes=_fabric_scopes(config_result))
+    if "user_code" not in flow:
+        message = flow.get("error_description") or flow.get("error") or "Microsoft Entra did not return a device code."
+        raise RuntimeError(f"Could not start Fabric authorization: {message}")
+    flow.setdefault("created_at", time.time())
+    if not flow.get("expires_at"):
+        flow["expires_at"] = time.time() + int(flow.get("expires_in", 900))
+    st.session_state[_FABRIC_DEVICE_FLOW_STATE_KEY] = flow
+    return flow
+
+
+def _poll_fabric_device_flow():
+    flow = st.session_state.get(_FABRIC_DEVICE_FLOW_STATE_KEY)
+    if not isinstance(flow, dict) or float(flow.get("expires_at", 0)) <= time.time():
+        st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
+        return None, "The Fabric authorization code expired. Start authorization again."
+
+    config_result = Utils.validate_config("MasterUser")
+    if isinstance(config_result, str):
+        return None, config_result
+    authority = _tenant_specific_authority(config_result["authority"], config_result["tenant_id"])
+    clientapp = msal.PublicClientApplication(client_id=config_result["client_id"], authority=authority)
+    response = clientapp.acquire_token_by_device_flow(flow, exit_condition=lambda current_flow: True)
+    if response and response.get("access_token"):
+        st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
+        _store_fabric_token_response(response)
+        return response, None
+
+    error = (response or {}).get("error")
+    if error in {"authorization_pending", "slow_down"}:
+        return None, None
+    st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
+    message = (response or {}).get("error_description") or error or "Fabric token was not returned."
+    return None, message
+
+
+def render_fabric_definition_authorization(scope_key):
+    """Render an on-demand authorization step when silent Fabric token acquisition was unavailable."""
+    headers = _fabric_headers_from_session()
+    if headers:
+        return headers
+
+    st.warning("Automatic report layout retrieval needs a one-time Fabric API authorization for this session.")
+    flow = st.session_state.get(_FABRIC_DEVICE_FLOW_STATE_KEY)
+    if isinstance(flow, dict):
+        _render_device_flow_instructions(flow)
+        complete_col, restart_col = st.columns(2)
+        with complete_col:
+            if st.button("I completed Fabric authorization", type="primary", key=f"{scope_key}_fabric_auth_complete"):
+                response, error = _poll_fabric_device_flow()
+                if response:
+                    st.rerun()
+                elif error:
+                    st.error(error)
+                else:
+                    st.info("Microsoft is still waiting for authorization approval.")
+        with restart_col:
+            if st.button("Restart Fabric authorization", key=f"{scope_key}_fabric_auth_restart"):
+                st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
+                st.rerun()
+        return None
+
+    if st.button("Authorize automatic report layouts", key=f"{scope_key}_fabric_auth_start"):
+        try:
+            _new_fabric_device_flow()
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    return None
 
 
 def get_confidential_client_auth_header(auth_mode):
@@ -2161,12 +2305,13 @@ def _parse_pbir_definition_from_zip(report_zip, report_id, file_name):
 
     page_json_members = [
         name for name in json_members
-        if "/definition/pages/" in name.replace("\\", "/") and name.lower().endswith("/page.json")
+        if "/definition/pages/" in ("/" + name.replace("\\", "/").lstrip("/"))
+        and name.lower().endswith("/page.json")
     ]
     visual_json_members = [
         name for name in json_members
-        if "/definition/pages/" in name.replace("\\", "/")
-        and "/visuals/" in name.replace("\\", "/")
+        if "/definition/pages/" in ("/" + name.replace("\\", "/").lstrip("/"))
+        and "/visuals/" in ("/" + name.replace("\\", "/").lstrip("/"))
         and name.lower().endswith("/visual.json")
     ]
 
@@ -2256,6 +2401,156 @@ def _is_premium_files_export_error(error_code, error_body):
         "premiumfiles" in combined
         or "operationisnotsupportedforpremiumfilesmodel" in combined
     )
+
+
+def _extract_fabric_error(response):
+    raw_body = str(response.text or "")[:2000]
+    error_code = f"HTTP_{response.status_code}"
+    error_message = raw_body or getattr(response, "reason", "")
+    request_id = (
+        response.headers.get("requestId")
+        or response.headers.get("x-ms-request-id")
+        or response.headers.get("ActivityId")
+        or ""
+    )
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            error_code = payload.get("errorCode") or payload.get("code") or error_code
+            error_message = payload.get("message") or error_message
+            request_id = payload.get("requestId") or request_id
+    except Exception:
+        pass
+    return error_code, error_message, request_id, raw_body
+
+
+def _fabric_retry_after_seconds(response, default=5):
+    try:
+        return max(1, min(int(response.headers.get("Retry-After") or default), 30))
+    except (TypeError, ValueError):
+        return default
+
+
+def _raise_fabric_response_error(response, operation):
+    error_code, error_message, request_id, _ = _extract_fabric_error(response)
+    detail = f"{operation}: HTTP {response.status_code} {error_code}: {error_message}".strip()
+    if request_id:
+        detail += f" (Request ID: {request_id})"
+    raise RuntimeError(detail)
+
+
+def _get_fabric_report_definition(fabric_headers, workspace_id, report_id, report_format=None):
+    """Return a report public definition, including Fabric long-running-operation polling."""
+    endpoint = f"{_FABRIC_API_BASE_URL}/workspaces/{workspace_id}/reports/{report_id}/getDefinition"
+    params = {}
+    normalized_format = str(report_format or "").lower()
+    if normalized_format == "pbirlegacy":
+        params["format"] = "PBIR-Legacy"
+    elif normalized_format == "pbir":
+        params["format"] = "PBIR"
+
+    response = requests.post(endpoint, headers=fabric_headers, params=params, timeout=60)
+    if response.status_code == 200:
+        return response.json()
+    if response.status_code != 202:
+        _raise_fabric_response_error(response, "Fabric Get Report Definition failed")
+
+    operation_id = str(response.headers.get("x-ms-operation-id") or "").strip()
+    operation_url = str(response.headers.get("Location") or "").strip()
+    if not operation_url and operation_id:
+        operation_url = f"{_FABRIC_API_BASE_URL}/operations/{operation_id}"
+    if not operation_url:
+        raise RuntimeError("Fabric accepted the report definition request but returned no operation URL.")
+
+    retry_seconds = _fabric_retry_after_seconds(response)
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        time.sleep(retry_seconds)
+        poll = requests.get(operation_url, headers=fabric_headers, timeout=60)
+        if poll.status_code not in (200, 202):
+            _raise_fabric_response_error(poll, "Fabric report definition polling failed")
+
+        try:
+            operation = poll.json()
+        except Exception:
+            operation = {}
+        if isinstance(operation, dict) and isinstance(operation.get("definition"), dict):
+            return operation
+
+        status = str(operation.get("status") or "").lower() if isinstance(operation, dict) else ""
+        if status == "succeeded":
+            result_url = str(poll.headers.get("Location") or "").strip()
+            if not result_url or result_url.rstrip("/") == operation_url.rstrip("/"):
+                if not operation_id:
+                    raise RuntimeError("Fabric completed report definition retrieval without a result URL.")
+                result_url = f"{_FABRIC_API_BASE_URL}/operations/{operation_id}/result"
+            result = requests.get(result_url, headers=fabric_headers, timeout=60)
+            if result.status_code != 200:
+                _raise_fabric_response_error(result, "Fabric report definition result failed")
+            return result.json()
+        if status in {"failed", "cancelled"}:
+            raise RuntimeError(f"Fabric report definition operation {status}: {json.dumps(operation.get('error') or {})}")
+        retry_seconds = _fabric_retry_after_seconds(poll, retry_seconds)
+
+    raise RuntimeError("Fabric report definition retrieval did not finish within five minutes.")
+
+
+def _fabric_definition_zip_bytes(payload):
+    definition = payload.get("definition") if isinstance(payload, dict) else None
+    if not isinstance(definition, dict):
+        raise RuntimeError("Fabric response did not contain a report definition.")
+    parts = definition.get("parts")
+    if not isinstance(parts, list) or not parts:
+        raise RuntimeError("Fabric report definition contained no parts.")
+
+    decoded_parts = []
+    seen_paths = set()
+    for part in parts:
+        if not isinstance(part, dict) or part.get("payloadType") != "InlineBase64":
+            raise RuntimeError("Fabric returned an unsupported report definition part.")
+        raw_path = str(part.get("path") or "").replace("\\", "/").strip("/")
+        part_path = PurePosixPath(raw_path)
+        if not raw_path or part_path.is_absolute() or ".." in part_path.parts:
+            raise RuntimeError("Fabric returned an unsafe report definition part path.")
+        encoded = str(part.get("payload") or "").strip()
+        encoded += "=" * (-len(encoded) % 4)
+        decoded_parts.append((str(part_path), base64.b64decode(encoded, validate=True)))
+        if str(part_path) in seen_paths:
+            raise RuntimeError(f"Fabric returned a duplicate report definition part: {part_path}")
+        seen_paths.add(str(part_path))
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for part_path, part_bytes in decoded_parts:
+            archive.writestr(part_path, part_bytes)
+    return archive_buffer.getvalue(), str(definition.get("format") or "not returned"), len(decoded_parts)
+
+
+def _parse_fabric_report_definition(payload, report_id):
+    archive_bytes, definition_format, part_count = _fabric_definition_zip_bytes(payload)
+    definition_file = io.BytesIO(archive_bytes)
+    definition_file.name = f"{report_id}-fabric-report-definition.zip"
+    records = parse_uploaded_report_layout(definition_file, report_id=report_id)
+    usable_records = [
+        record for record in records or []
+        if isinstance(record, dict)
+        and str(record.get("Visual ID") or "").strip().lower() not in {"", "n/a", "none"}
+    ]
+    if not usable_records:
+        detail = "; ".join(
+            str(record.get("Error Detail") or record.get("Status") or "")
+            for record in records or []
+            if isinstance(record, dict)
+        )
+        raise RuntimeError(f"Fabric definition was downloaded but no visual metadata could be parsed. {detail}".strip())
+    parsed_records = []
+    for record in usable_records:
+        row = dict(record)
+        row["Metadata Source"] = f"Fabric Get Report Definition ({definition_format})"
+        row["Status"] = "Visual metadata parsed automatically from the Fabric report definition"
+        row["Definition Parts"] = part_count
+        parsed_records.append(row)
+    return parsed_records
 
 
 def _normalize_auth_header_candidates(auth_headers):
@@ -2503,16 +2798,16 @@ def _download_report_layout_package(auth_headers, workspace_id, report_id):
     }
 
 
-def get_report_visual_usage(headers, workspace_id, report_id):
+def get_report_visual_usage(headers, workspace_id, report_id, fabric_headers=None, report_format=None):
     """
     Return report visual and field usage rows.
 
     Preferred path:
-    - Try MasterUser/ServicePrincipal auth candidates against the Export API.
-    - Parse Report/Layout for page -> visual -> field/measure mappings.
+    - Retrieve the public report definition through the Linux-compatible Fabric API.
+    - Parse PBIR-Legacy report.json or PBIR definition files.
 
     Fallback path:
-    - If Power BI blocks layout export, return page-level metadata plus clear diagnostics.
+    - Try PBIX Export / Report Layout, then page-level metadata with diagnostics.
     """
     if not workspace_id or not report_id:
         return [{
@@ -2522,6 +2817,19 @@ def get_report_visual_usage(headers, workspace_id, report_id):
             "Error Detail": "Workspace ID and Report ID are required to inspect report visuals.",
         }]
 
+    fabric_error = None
+    if fabric_headers:
+        try:
+            definition_payload = _get_fabric_report_definition(
+                fabric_headers,
+                workspace_id,
+                report_id,
+                report_format=report_format,
+            )
+            return _parse_fabric_report_definition(definition_payload, report_id)
+        except Exception as exc:
+            fabric_error = str(exc)
+
     try:
         package_bytes, metadata_source, export_error = _download_report_layout_package(headers, workspace_id, report_id)
 
@@ -2529,6 +2837,8 @@ def get_report_visual_usage(headers, workspace_id, report_id):
             attempt_detail = ""
             if export_error and export_error.get("all_errors"):
                 attempt_detail = f" Auth attempts: {_format_powerbi_attempt_errors(export_error.get('all_errors'))}"
+            if fabric_error:
+                attempt_detail += f" Fabric definition attempt: {fabric_error}"
 
             if export_error and export_error.get("is_premium_files_error"):
                 return get_report_page_metadata_only(
@@ -3190,6 +3500,8 @@ def render_visual_usage_records(records, empty_message, download_key):
         "Report",
         "Dataset ID",
         "Report ID",
+        "Metadata Source",
+        "Definition Parts",
         "Page Name",
         "Page ID",
         "Visual Name",
@@ -4865,6 +5177,7 @@ def build_workspace_report_contexts(selected_art_keys, artifact_mapping):
             "Dataset ID": item.get("Dataset ID"),
             "Target Workspace ID": item.get("Workspace ID"),
             "Report Type": item.get("Type"),
+            "Report Format": item.get("Format"),
         })
     return contexts
 
@@ -4890,6 +5203,7 @@ def build_app_report_contexts(selected_art_keys, app_art_mapping, headersSPA):
             "Dataset ID": dataset_id,
             "Target Workspace ID": target_workspace_id,
             "Report Type": item.get("Type"),
+            "Report Format": item.get("Format"),
         })
     return contexts
 
@@ -7951,67 +8265,170 @@ def _infer_report_context_index_from_filename(file_name, contexts):
     return best_idx
 
 
-def render_upload_only_report_layout_view(contexts, scope_key, download_key):
-    """Upload and parse one or more manually downloaded reports for visual metadata.
+def _normalize_layout_records_for_context(records, context, report_id):
+    return [
+        {
+            "Scope Type": context.get("Scope Type"),
+            "Container Name": context.get("Container Name"),
+            "Workspace": context.get("Workspace"),
+            "App Name": context.get("App Name"),
+            "Source Report": context.get("Source Report"),
+            "Report ID": report_id,
+            "Dataset ID": context.get("Dataset ID"),
+            **record,
+        }
+        for record in records or []
+        if isinstance(record, dict)
+    ]
 
-    Earlier versions allowed only a single file mapped to a single selected report.
-    This version supports multiple report uploads in one pass and stores parsed
-    visual-layout rows per report ID, so Visual Source Lookup can combine all
-    selected reports.
-    """
+
+def _automatic_layout_attempt_key(scope_key, context, source_name):
+    return (
+        f"{scope_key}_automatic_layout_v2_{source_name}_"
+        f"{context.get('Target Workspace ID')}_{context.get('Report ID')}"
+    )
+
+
+def render_upload_only_report_layout_view(
+    contexts,
+    scope_key,
+    download_key,
+    powerbi_headers=None,
+    fabric_headers=None,
+):
+    """Retrieve report definitions automatically and retain manual upload as a fallback."""
     if not contexts:
-        st.info("Select one or more reports and upload their manually downloaded PBIX/PBIP/PBIR files.")
+        st.info("Select one or more reports to retrieve their layout metadata.")
         return []
+
+    needs_automatic_retrieval = any(
+        not get_uploaded_layout_records(scope_key, context.get("Report ID"))
+        for context in contexts
+    )
+    if not fabric_headers and needs_automatic_retrieval:
+        fabric_headers = render_fabric_definition_authorization(f"{scope_key}_report_layout")
+    source_name = "fabric" if fabric_headers else "powerbi_export"
+    automatic_states = []
+
+    for context in contexts:
+        report_id = context.get("Report ID")
+        workspace_id = context.get("Target Workspace ID")
+        existing_records = get_uploaded_layout_records(scope_key, report_id)
+        attempt_key = _automatic_layout_attempt_key(scope_key, context, source_name)
+
+        if existing_records:
+            automatic_states.append({"status": "cached", "context": context, "count": len(existing_records)})
+            continue
+        if not report_id or not workspace_id:
+            automatic_states.append({
+                "status": "failed",
+                "context": context,
+                "error": "Workspace ID or report ID could not be resolved.",
+            })
+            continue
+        if str(context.get("Report Type") or "").lower() == "paginatedreport":
+            automatic_states.append({
+                "status": "skipped",
+                "context": context,
+                "error": "Paginated reports do not use the Power BI report definition parser.",
+            })
+            continue
+        if not fabric_headers:
+            automatic_states.append({"status": "authorization_required", "context": context})
+            continue
+
+        if attempt_key not in st.session_state:
+            with st.spinner(f"Retrieving report definition for {context.get('Source Report') or report_id}..."):
+                parsed_records = get_report_visual_usage(
+                    powerbi_headers,
+                    workspace_id,
+                    report_id,
+                    fabric_headers=fabric_headers,
+                    report_format=context.get("Report Format"),
+                )
+            usable_records = [
+                record for record in parsed_records or []
+                if isinstance(record, dict)
+                and str(record.get("Visual ID") or "").strip().lower() not in {"", "n/a", "none"}
+            ]
+            if usable_records and not _visual_usage_block_reason(usable_records):
+                normalized_records = _normalize_layout_records_for_context(usable_records, context, report_id)
+                st.session_state[_layout_session_key(scope_key, report_id)] = normalized_records
+                st.session_state[attempt_key] = {
+                    "status": "success",
+                    "context": context,
+                    "count": len(normalized_records),
+                }
+            else:
+                error_detail = "; ".join(
+                    str(record.get("Error Detail") or record.get("Status") or "")
+                    for record in parsed_records or []
+                    if isinstance(record, dict)
+                )
+                st.session_state[attempt_key] = {
+                    "status": "failed",
+                    "context": context,
+                    "error": error_detail or "No visual metadata was returned.",
+                }
+        automatic_states.append(st.session_state.get(attempt_key) or {})
+
+    success_states = [state for state in automatic_states if state.get("status") in {"success", "cached"}]
+    failed_states = [state for state in automatic_states if state.get("status") == "failed"]
+    if success_states:
+        report_count = len(success_states)
+        record_count = sum(int(state.get("count") or 0) for state in success_states)
+        st.success(f"Report layout metadata is available for {report_count} report(s), with {record_count} visual-field rows.")
+    for state in failed_states:
+        context = state.get("context") or {}
+        st.warning(f"{context.get('Source Report') or context.get('Report ID')}: automatic layout retrieval failed.")
+        with st.expander(f"Automatic retrieval details - {context.get('Source Report') or 'report'}", expanded=False):
+            st.code(str(state.get("error") or "No error detail was returned."))
+
+    if failed_states:
+        if st.button("Retry automatic layout retrieval", key=f"{scope_key}_retry_automatic_layout"):
+            for context in contexts:
+                for candidate_source in ("fabric", "powerbi_export"):
+                    st.session_state.pop(_automatic_layout_attempt_key(scope_key, context, candidate_source), None)
+            st.rerun()
 
     report_labels = [ctx.get("Context Key") for ctx in contexts]
-    st.info(
-        "Upload manually downloaded report files from Power BI. You can upload multiple files. "
-        "For each file, map it to the matching selected report so the lookup can join visual fields to the correct dataset."
-    )
+    with st.expander("Manual report layout fallback", expanded=not success_states):
+        uploaded_files = st.file_uploader(
+            "Upload one or more PBIX / PBIP ZIP / PBIR definition ZIP / Report Layout JSON files",
+            type=["pbix", "zip", "json", "pbir", "pbip"],
+            accept_multiple_files=True,
+            key=f"{scope_key}_layout_multi_file_uploader",
+        )
 
-    uploaded_files = st.file_uploader(
-        "Upload one or more PBIX / PBIP ZIP / PBIR definition ZIP / Report Layout JSON files",
-        type=["pbix", "zip", "json", "pbir", "pbip"],
-        accept_multiple_files=True,
-        key=f"{scope_key}_layout_multi_file_uploader",
-    )
-
-    if uploaded_files:
-        for file_index, uploaded_file in enumerate(uploaded_files):
-            file_name = getattr(uploaded_file, "name", f"uploaded_report_{file_index + 1}")
-            default_index = _infer_report_context_index_from_filename(file_name, contexts)
-            selected_label = render_searchable_single_select(
-                f"Map uploaded file to report: {file_name}",
-                options=report_labels,
-                index=default_index if 0 <= default_index < len(report_labels) else 0,
-                key=f"{scope_key}_layout_upload_map_{file_index}_{_safe_widget_key(file_name)}",
-            )
-            selected_context = next((ctx for ctx in contexts if ctx.get("Context Key") == selected_label), contexts[0])
-            report_id = selected_context.get("Report ID") or f"Manual Upload {file_index + 1}"
-
-            parsed_records = parse_uploaded_report_layout(uploaded_file, report_id=report_id)
-            normalized_records = []
-            for record in parsed_records:
-                normalized_records.append({
-                    "Scope Type": selected_context.get("Scope Type"),
-                    "Container Name": selected_context.get("Container Name"),
-                    "Workspace": selected_context.get("Workspace"),
-                    "App Name": selected_context.get("App Name"),
-                    "Source Report": selected_context.get("Source Report"),
-                    "Report ID": report_id,
-                    "Dataset ID": selected_context.get("Dataset ID"),
-                    **record,
-                })
-            st.session_state[_layout_session_key(scope_key, report_id)] = normalized_records
+        if uploaded_files:
+            for file_index, uploaded_file in enumerate(uploaded_files):
+                file_name = getattr(uploaded_file, "name", f"uploaded_report_{file_index + 1}")
+                default_index = _infer_report_context_index_from_filename(file_name, contexts)
+                selected_label = render_searchable_single_select(
+                    f"Map uploaded file to report: {file_name}",
+                    options=report_labels,
+                    index=default_index if 0 <= default_index < len(report_labels) else 0,
+                    key=f"{scope_key}_layout_upload_map_{file_index}_{_safe_widget_key(file_name)}",
+                )
+                selected_context = next(
+                    (ctx for ctx in contexts if ctx.get("Context Key") == selected_label),
+                    contexts[0],
+                )
+                report_id = selected_context.get("Report ID") or f"Manual Upload {file_index + 1}"
+                parsed_records = parse_uploaded_report_layout(uploaded_file, report_id=report_id)
+                st.session_state[_layout_session_key(scope_key, report_id)] = _normalize_layout_records_for_context(
+                    parsed_records,
+                    selected_context,
+                    report_id,
+                )
 
     records = get_uploaded_layout_records_for_contexts(scope_key, contexts)
-
     if not records:
-        st.warning("No uploaded layout parsed yet. Upload one or more manually downloaded report files above.")
+        st.warning("No report visual metadata is available. Complete Fabric authorization or use the manual fallback.")
         return []
 
-    st.caption(f"Showing uploaded layout records for {len({row.get('Report ID') for row in records})} report(s).")
-    render_visual_usage_records(records, "No layout/visual fields found in uploaded report files.", download_key)
+    st.caption(f"Showing layout records for {len({row.get('Report ID') for row in records})} report(s).")
+    render_visual_usage_records(records, "No layout/visual fields found in selected reports.", download_key)
     return records
 
 
@@ -8097,7 +8514,7 @@ def _semantic_lookup_keys(dataset_id, semantic_table, semantic_object, object_ty
 
 
 def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token, scope_key, cache_prefix, download_key):
-    """Join uploaded report visual fields to semantic columns/measures and source table/view lineage."""
+    """Join retrieved report visual fields to semantic columns/measures and source table/view lineage."""
     if not contexts:
         st.info("Select at least one report first.")
         return []
@@ -8105,7 +8522,7 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
     layout_records = get_uploaded_layout_records_for_contexts(scope_key, contexts)
 
     if not layout_records:
-        st.warning("Upload a report in the 'Uploaded Report Layout' tab first. Lookup view is built only from uploaded report layout metadata.")
+        st.warning("Retrieve or upload a report definition in the 'Report Layout' tab first.")
         return []
 
     semantic_rows = _get_semantic_objects_for_contexts(contexts, headersSPA, headersSP, xmla_token, cache_prefix)
@@ -8270,7 +8687,7 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
         })
 
     if not lookup_rows:
-        st.info("No lookup rows could be created from the uploaded report layout.")
+        st.info("No lookup rows could be created from the retrieved report layout.")
         return []
 
     requested_columns = [
@@ -9034,6 +9451,7 @@ if st.session_state.auth_bundle:
                                     'Name': r.get('name'),
                                     'ID': r.get('id'),
                                     'Type': r.get('reportType'),
+                                    'Format': r.get('format'),
                                     'Dataset ID': r.get('datasetId'),
                                     'Embed URL': r.get('embedUrl')
                                 } for r in raw_reports]
@@ -9348,9 +9766,9 @@ if st.session_state.auth_bundle:
 
                 with workspace_tab_map["Visual Details"]:
                     st.write("### Visual Details")
-                    st.caption("Upload report layout files and build visual-to-source lookup separately from the core artifact lineage tabs.")
+                    st.caption("Retrieve report definitions automatically and build visual-to-source lookup from their layout metadata.")
                     visual_layout_tab, visual_lookup_tab = st.tabs([
-                        "Uploaded Report Layout",
+                        "Report Layout",
                         "Visual Source Lookup"
                     ])
 
@@ -9361,9 +9779,10 @@ if st.session_state.auth_bundle:
                                 workspace_report_contexts,
                                 "workspace",
                                 "workspace_uploaded_report_layout_download",
+                                powerbi_headers=headersSPA,
                             )
                         elif artifact_choice == "Dashboard":
-                            st.info("Upload-only layout parsing is available for Reports. For dashboards, select the source report PBIX/PBIP/PBIR file.")
+                            st.info("Report definition retrieval is available for Reports. For dashboards, select the source report.")
 
                     with visual_lookup_tab:
                         if artifact_choice == "Report":
@@ -9378,12 +9797,12 @@ if st.session_state.auth_bundle:
                                 "workspace_visual_source_lookup_download",
                             )
                         elif artifact_choice == "Dashboard":
-                            st.info("Lookup view is report-layout based. Select Report and upload the downloaded report file first.")
+                            st.info("Lookup view is report-layout based. Select the source Report first.")
 
                 if workspace_uploaded_visual_lineage_ready:
                     with workspace_tab_map[workspace_visual_lineage_tab_label]:
                         st.write("### Visual Item Lineage")
-                        st.caption("Joined visual item, semantic object, measure dependency, and source database lineage from uploaded report layouts.")
+                        st.caption("Joined visual item, semantic object, measure dependency, and source database lineage from retrieved report layouts.")
                         workspace_report_contexts = build_workspace_report_contexts(selected_art_keys, artifact_mapping)
                         render_visual_source_lookup_view(
                             workspace_report_contexts,
@@ -9438,6 +9857,7 @@ if st.session_state.auth_bundle:
                                     'Name': r.get('name'),
                                     'ID': r.get('originalReportObjectId') or r.get('id'),
                                     'Type': r.get('reportType', 'Report'),
+                                    'Format': r.get('format'),
                                     'Original ID': r.get('originalReportObjectId') or r.get('id'),
                                     'Workspace ID': r.get('workspaceId'),
                                     'Dataset ID': r.get('datasetId'),
@@ -9759,9 +10179,9 @@ if st.session_state.auth_bundle:
 
                 with app_tab_map["🧩 Visual Level Details"]:
                     st.write("### 🧩 Visual Level Details")
-                    st.caption("Upload report layout files and build visual-to-source lookup separately from the core app lineage tabs.")
+                    st.caption("Retrieve report definitions automatically and build visual-to-source lookup from their layout metadata.")
                     app_visual_layout_tab, app_visual_lookup_tab = st.tabs([
-                        "🧩 Uploaded Report Layout",
+                        "🧩 Report Layout",
                         "🔎 Visual Source Lookup"
                     ])
                     with app_visual_layout_tab:
@@ -9771,9 +10191,10 @@ if st.session_state.auth_bundle:
                                 app_report_contexts,
                                 "app",
                                 "app_uploaded_report_layout_download",
+                                powerbi_headers=headersSPA,
                             )
                         elif artifact_choice == "Dashboard":
-                            st.info("Upload-only layout parsing is available for Reports. For dashboards, select the source App Report file.")
+                            st.info("Report definition retrieval is available for Reports. For dashboards, select the source App Report.")
                     with app_visual_lookup_tab:
                         if artifact_choice == "Report":
                             app_report_contexts = build_app_report_contexts(selected_art_keys, app_art_mapping, headersSPA)
@@ -9787,12 +10208,12 @@ if st.session_state.auth_bundle:
                                 "app_visual_source_lookup_download",
                             )
                         elif artifact_choice == "Dashboard":
-                            st.info("Lookup view is report-layout based. Select App Report and upload the downloaded report file first.")
+                            st.info("Lookup view is report-layout based. Select the source App Report first.")
 
                 if app_uploaded_visual_lineage_ready:
                     with app_tab_map[app_visual_lineage_tab_label]:
                         st.write("### Visual Item Lineage")
-                        st.caption("Joined visual item, semantic object, measure dependency, and source database lineage from uploaded app report layouts.")
+                        st.caption("Joined visual item, semantic object, measure dependency, and source database lineage from retrieved app report layouts.")
                         app_report_contexts = build_app_report_contexts(selected_art_keys, app_art_mapping, headersSPA)
                         render_visual_source_lookup_view(
                             app_report_contexts,

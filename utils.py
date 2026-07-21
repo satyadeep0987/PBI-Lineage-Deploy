@@ -272,6 +272,16 @@ class Utils:
                 "scopes",
                 "scope",
             ],
+            "fabric_scope": [
+                f"{prefix}_FABRIC_SCOPES",
+                f"{prefix}_FABRIC_SCOPE",
+                "PBI_FABRIC_SCOPES",
+                "PBI_FABRIC_SCOPE",
+                "FABRIC_SCOPES",
+                "FABRIC_SCOPE",
+                "fabric_scopes",
+                "fabric_scope",
+            ],
         }
 
     @staticmethod
@@ -295,7 +305,7 @@ class Utils:
                     found = True
                     break
             if found:
-                config[config_key] = Utils._split_scopes(value) if config_key == "scope" else value
+                config[config_key] = Utils._split_scopes(value) if config_key in {"scope", "fabric_scope"} else value
         return config
 
     @staticmethod
@@ -303,6 +313,11 @@ class Utils:
         # MasterUser is the primary supported mode in the latest app.
         prefix = Utils._auth_mode_prefix(auth_mode)
         default_authority = "https://login.microsoftonline.com/organizations"
+        default_fabric_scope = (
+            "https://api.fabric.microsoft.com/Report.ReadWrite.All"
+            if str(auth_mode or "").lower() == "masteruser"
+            else "https://api.fabric.microsoft.com/.default"
+        )
         return {
             "authenticate_mode": os.getenv(f"{prefix}_AUTHENTICATE_MODE", auth_mode),
             "tenant_id": os.getenv(f"{prefix}_TENANT_ID", os.getenv("PBI_TENANT_ID", "")),
@@ -321,6 +336,12 @@ class Utils:
                         "https://analysis.windows.net/powerbi/api/Workspace.Read.All "
                         "https://analysis.windows.net/powerbi/api/Tenant.Read.All"
                     ),
+                )
+            ),
+            "fabric_scope": Utils._split_scopes(
+                os.getenv(
+                    f"{prefix}_FABRIC_SCOPES",
+                    os.getenv("PBI_FABRIC_SCOPES", default_fabric_scope),
                 )
             ),
         }
@@ -372,6 +393,7 @@ class Utils:
         # and a local JSON file wins for explicit local development.
         config = {**env_config, **streamlit_config, **mode_config}
         config["scope"] = Utils._split_scopes(config.get("scope"))
+        config["fabric_scope"] = Utils._split_scopes(config.get("fabric_scope"))
 
         missing = []
         for key in ["authenticate_mode", "tenant_id", "client_id", "authority", "scope"]:
