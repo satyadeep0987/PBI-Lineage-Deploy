@@ -27,9 +27,12 @@ from pathlib import PurePosixPath
 from urllib.parse import quote
 from pbi_modules.app_shell import (
     check_authenticated_session,
+    direct_report_context,
     render_app_top_bar,
     render_direct_measure_lookup_page,
     render_login_page,
+    render_measure_impact_page,
+    render_table_impact_page,
     render_workflow_choice_page,
 )
 from pbi_modules.controls import (
@@ -8436,6 +8439,895 @@ def render_measure_source_lineage_view(contexts, headersSPA, xmla_token, cache_p
     return display_df.to_dict("records")
 
 
+def _table_impact_measure_name(row):
+    measure_name = row.get("Measure Name")
+    if _is_meaningful_value(measure_name):
+        return str(measure_name)
+    if _semantic_dependency_type(row.get("Target Object Type")) == "MEASURE":
+        target_name = row.get("Target Object Name")
+        if _is_meaningful_value(target_name):
+            return str(target_name)
+    return "N/A"
+
+
+def _table_impact_cached_layout_records(context):
+    report_id = context.get("Report ID")
+    if not report_id:
+        return []
+
+    scopes = (
+        "workspace",
+        "app",
+        f"report_lineage_{_safe_widget_key(report_id)}",
+        f"direct_measure_{_safe_widget_key(report_id)}",
+    )
+    records = []
+    seen = set()
+    for scope in scopes:
+        for row in get_uploaded_layout_records(scope, report_id):
+            row_key = (
+                str(row.get("Report ID") or report_id),
+                str(row.get("Visual ID") or ""),
+                str(row.get("Table Name") or ""),
+                str(row.get("Column / Measure Name") or ""),
+                str(row.get("Query Reference") or ""),
+            )
+            if row_key in seen:
+                continue
+            seen.add(row_key)
+            records.append(row)
+    return records
+
+
+def _impact_visual_layout_records(context, powerbi_headers, fabric_headers=None):
+    """Return cached visual fields or retrieve and cache the report definition."""
+    cached_records = _table_impact_cached_layout_records(context)
+    usable_cached_records = [
+        row for row in cached_records
+        if isinstance(row, dict)
+        and str(row.get("Visual ID") or "").strip().lower() not in {"", "n/a", "none"}
+    ]
+    if usable_cached_records and not _visual_usage_block_reason(usable_cached_records):
+        return usable_cached_records, "Cached report definition", None
+
+    report_id = context.get("Report ID")
+    workspace_id = context.get("Target Workspace ID")
+    if not report_id or not workspace_id:
+        return [], "Unavailable", "Workspace ID or report ID could not be resolved."
+    if str(context.get("Report Type") or "").casefold() == "paginatedreport":
+        return [], "Not supported", "Paginated reports do not expose PBIR visual field mappings."
+
+    parsed_records = get_report_visual_usage(
+        powerbi_headers,
+        workspace_id,
+        report_id,
+        fabric_headers=fabric_headers,
+        report_format=context.get("Report Format"),
+    )
+    usable_records = [
+        row for row in parsed_records or []
+        if isinstance(row, dict)
+        and str(row.get("Visual ID") or "").strip().lower() not in {"", "n/a", "none"}
+    ]
+    block_reason = _visual_usage_block_reason(parsed_records or [])
+    if usable_records and not block_reason:
+        normalized_records = _normalize_layout_records_for_context(
+            usable_records,
+            context,
+            report_id,
+        )
+        scope_key = f"report_lineage_{_safe_widget_key(report_id)}"
+        st.session_state[_layout_session_key(scope_key, report_id)] = normalized_records
+        source = _prefer_non_na(
+            normalized_records[0].get("Metadata Source") if normalized_records else None,
+            "Retrieved report definition",
+        )
+        return normalized_records, source, None
+
+    detail = block_reason or "; ".join(
+        str(row.get("Error Detail") or row.get("Status") or "")
+        for row in parsed_records or []
+        if isinstance(row, dict)
+    )
+    return [], "Unavailable", detail or "No visual field metadata was returned."
+
+
+def _table_impact_visual_evidence(layout_records, table_query, semantic_tables, measure_names, include_partial):
+    semantic_markers = {normalize_identifier(value) for value in semantic_tables if value}
+    measure_markers = {normalize_identifier(value) for value in measure_names if value}
+    matching_rows = []
+
+    for row in layout_records:
+        table_fields = (
+            "Table Name",
+            "Visual Table Name",
+            "Semantic_Tables",
+            "Matched_Semantic_Table",
+        )
+        table_match = any(
+            table_value_matches(row.get(field), table_query, include_partial=include_partial)
+            for field in table_fields
+        )
+        semantic_match = any(
+            normalize_identifier(row.get(field)) in semantic_markers
+            for field in table_fields
+            if normalize_identifier(row.get(field))
+        )
+        object_match = any(
+            normalize_identifier(row.get(field)) in measure_markers
+            for field in ("Column / Measure Name", "Visual Field Name", "Semantic_Object_Name")
+            if normalize_identifier(row.get(field))
+        )
+        if table_match or semantic_match or object_match:
+            matching_rows.append(row)
+
+    visual_keys = {
+        (
+            str(row.get("Report ID") or ""),
+            str(row.get("Page Name") or ""),
+            str(row.get("Visual ID") or row.get("Visual Name") or ""),
+        )
+        for row in matching_rows
+    }
+    return matching_rows, len(visual_keys)
+
+
+def _build_table_impact_analysis(
+    records,
+    table_query,
+    include_partial,
+    headersSPA,
+    xmla_token,
+    fabric_headers=None,
+):
+    contexts = [direct_report_context(record) for record in records]
+    model_groups = {}
+    skipped_reports = 0
+    for context in contexts:
+        dataset_id = str(context.get("Dataset ID") or "").strip()
+        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        if not dataset_id or not workspace_id:
+            skipped_reports += 1
+            continue
+        model_groups.setdefault((workspace_id, dataset_id), []).append(context)
+
+    report_rows = []
+    measure_rows = []
+    distinct_measure_keys = set()
+    affected_model_keys = set()
+    confirmed_report_keys = set()
+    visual_metadata_report_keys = set()
+    visual_errors = []
+    scan_errors = []
+    progress = st.progress(0, text="Preparing semantic model impact scan...")
+    groups = list(model_groups.items())
+
+    for index, (model_key, report_contexts) in enumerate(groups):
+        representative = report_contexts[0]
+        progress.progress(
+            (index + 1) / max(1, len(groups)),
+            text=f"Scanning model {index + 1} of {len(groups)}: {representative.get('Source Report') or model_key[1]}",
+        )
+        try:
+            source_rows = _get_source_lineage_for_context(
+                representative,
+                headersSPA,
+                xmla_token,
+                "table_impact",
+                auth_headers=[("MasterUser", headersSPA)],
+            )
+            dependency_rows = _get_measure_lineage_rows_for_contexts(
+                [representative],
+                headersSPA,
+                xmla_token,
+                "table_impact",
+            )
+
+            matching_sources = []
+            semantic_table_markers = set()
+            semantic_table_names = set()
+            for source_row in source_rows:
+                match_field, match_value = find_table_match(
+                    source_row,
+                    table_query,
+                    SOURCE_TABLE_FIELDS,
+                    include_partial=include_partial,
+                )
+                if not match_field:
+                    continue
+                matching_sources.append((source_row, match_field, match_value))
+                semantic_table = source_row.get("Power BI Table Name")
+                marker = normalize_identifier(semantic_table)
+                if marker:
+                    semantic_table_markers.add(marker)
+                    semantic_table_names.add(str(semantic_table))
+
+            matching_dependencies = []
+            for dependency_row in dependency_rows:
+                measure_name = _table_impact_measure_name(dependency_row)
+                if not _is_meaningful_value(measure_name):
+                    continue
+
+                match_field, match_value = find_table_match(
+                    dependency_row,
+                    table_query,
+                    MEASURE_TABLE_FIELDS,
+                    include_partial=include_partial,
+                )
+                dependency_table = dependency_row.get("Semantic Table/View")
+                bridged_match = normalize_identifier(dependency_table) in semantic_table_markers
+                if not match_field and bridged_match:
+                    match_field = "Power BI Table Name (source bridge)"
+                    match_value = str(dependency_table)
+                if not match_field:
+                    continue
+
+                matching_dependencies.append((dependency_row, match_field, match_value))
+                if _is_meaningful_value(dependency_table):
+                    semantic_table_names.add(str(dependency_table))
+                distinct_measure_keys.add((
+                    model_key[1],
+                    normalize_identifier(dependency_row.get("Target Table/View")),
+                    normalize_identifier(measure_name),
+                ))
+
+            if not matching_sources and not matching_dependencies:
+                continue
+
+            affected_model_keys.add(model_key)
+            model_measure_names = sorted({
+                _table_impact_measure_name(row)
+                for row, _, _ in matching_dependencies
+                if _is_meaningful_value(_table_impact_measure_name(row))
+            }, key=str.casefold)
+            matched_values = sorted({
+                str(value)
+                for _, _, value in [*matching_sources, *matching_dependencies]
+                if _is_meaningful_value(value)
+            }, key=str.casefold)
+
+            for context in report_contexts:
+                layout_records, layout_source, layout_error = _impact_visual_layout_records(
+                    context,
+                    headersSPA,
+                    fabric_headers=fabric_headers,
+                )
+                visual_rows, visual_count = _table_impact_visual_evidence(
+                    layout_records,
+                    table_query,
+                    semantic_table_names,
+                    model_measure_names,
+                    include_partial,
+                )
+                report_key = str(context.get("Report ID") or context.get("Source Report") or "")
+                if layout_records:
+                    visual_metadata_report_keys.add(report_key)
+                elif layout_error:
+                    visual_errors.append({
+                        "Workspace": context.get("Workspace"),
+                        "Report": context.get("Source Report"),
+                        "Report ID": context.get("Report ID"),
+                        "Error": layout_error,
+                    })
+                if visual_count:
+                    confirmed_report_keys.add(report_key)
+                    visual_evidence = f"Confirmed ({visual_count} visual(s))"
+                elif layout_records:
+                    visual_evidence = "No direct visual match"
+                else:
+                    visual_evidence = "Visual metadata unavailable" if layout_error else "Visual metadata not loaded"
+
+                report_rows.append({
+                    "Workspace": context.get("Workspace"),
+                    "Report": context.get("Source Report"),
+                    "Report ID": context.get("Report ID"),
+                    "Dataset ID": context.get("Dataset ID"),
+                    "Affected Measure Count": len(model_measure_names),
+                    "Affected Measures": "; ".join(model_measure_names) or "N/A",
+                    "Usage Basis": (
+                        "Measure dependency in connected semantic model"
+                        if matching_dependencies
+                        else "Table exists in connected semantic model"
+                    ),
+                    "Matched Table": "; ".join(matched_values) or table_query,
+                    "Visual Evidence": visual_evidence,
+                    "Visual Metadata Source": layout_source,
+                })
+
+                visual_measure_markers = {
+                    normalize_identifier(row.get("Column / Measure Name"))
+                    for row in visual_rows
+                    if normalize_identifier(row.get("Column / Measure Name"))
+                }
+                for dependency_row, match_field, match_value in matching_dependencies:
+                    measure_name = _table_impact_measure_name(dependency_row)
+                    measure_rows.append({
+                        "Workspace": context.get("Workspace"),
+                        "Report": context.get("Source Report"),
+                        "Report ID": context.get("Report ID"),
+                        "Dataset ID": context.get("Dataset ID"),
+                        "Measure": measure_name,
+                        "Measure Home Table": dependency_row.get("Target Table/View"),
+                        "DAX Expression": dependency_row.get("Target Expression"),
+                        "Dependency Table": dependency_row.get("Semantic Table/View"),
+                        "Dependency Object": dependency_row.get("Semantic Object Name"),
+                        "Dependency Object Type": dependency_row.get("Semantic Object Type"),
+                        "Source Database": dependency_row.get("Exact Source Database"),
+                        "Source Schema": dependency_row.get("Exact Source Schema"),
+                        "Source Table/View": dependency_row.get("Exact Source Table/View"),
+                        "Source Column": dependency_row.get("Exact Source Column Name"),
+                        "Source Fully Qualified Object": dependency_row.get("Fully Qualified Source Object"),
+                        "Matched Field": match_field,
+                        "Matched Value": match_value,
+                        "Visual Usage": (
+                            "Confirmed"
+                            if normalize_identifier(measure_name) in visual_measure_markers
+                            else visual_evidence
+                        ),
+                    })
+        except Exception as exc:
+            scan_errors.append({
+                "Dataset ID": model_key[1],
+                "Report": representative.get("Source Report"),
+                "Error": str(exc),
+            })
+
+    progress.empty()
+
+    report_df = pd.DataFrame(report_rows).drop_duplicates(
+        subset=["Report ID", "Dataset ID"],
+        keep="first",
+    ) if report_rows else pd.DataFrame()
+    measure_df = pd.DataFrame(measure_rows).drop_duplicates(
+        subset=[
+            "Report ID",
+            "Dataset ID",
+            "Measure",
+            "Dependency Table",
+            "Dependency Object",
+            "Source Fully Qualified Object",
+            "Source Column",
+        ],
+        keep="first",
+    ) if measure_rows else pd.DataFrame()
+
+    return {
+        "query": table_query,
+        "include_partial": include_partial,
+        "reports_scanned": len(records),
+        "models_scanned": len(model_groups),
+        "skipped_reports": skipped_reports,
+        "affected_models": len(affected_model_keys),
+        "affected_reports": len(report_df),
+        "distinct_measures": len(distinct_measure_keys),
+        "visual_confirmed_reports": len(confirmed_report_keys),
+        "visual_metadata_reports": len(visual_metadata_report_keys),
+        "report_rows": report_df.to_dict("records"),
+        "measure_rows": measure_df.to_dict("records"),
+        "visual_errors": visual_errors,
+        "errors": scan_errors,
+    }
+
+
+def render_table_impact_analysis_view(records, headersSPA, headersSP, xmla_token):
+    """Reverse-search a semantic or physical table across accessible report models."""
+    st.write("### Table Impact Analysis")
+    st.caption("Trace a semantic table or physical source table forward to dependent measures and connected reports.")
+    fabric_headers = render_fabric_definition_authorization("table_impact_visual_confirmation")
+
+    workspace_options = sorted({
+        str(record.get("Workspace Name"))
+        for record in records
+        if record.get("Workspace Name")
+    }, key=str.casefold)
+
+    with st.form("table_impact_analysis_form", border=True):
+        table_query = st.text_input(
+            "Table name",
+            placeholder="Example: FACT_SALES or DATABASE.SCHEMA.FACT_SALES",
+        )
+        selected_workspaces = st.multiselect(
+            "Workspace scope",
+            options=workspace_options,
+            default=workspace_options,
+        )
+        include_partial = st.toggle(
+            "Include partial-name matches",
+            value=False,
+            help="Use only when the exact semantic table or qualified source table name is unknown.",
+        )
+        submitted = st.form_submit_button(
+            "Run impact analysis",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if submitted:
+        normalized_query = str(table_query or "").strip()
+        if not normalized_query:
+            st.warning("Enter a semantic or source table name.")
+        elif not selected_workspaces:
+            st.warning("Select at least one workspace to scan.")
+        else:
+            scoped_records = [
+                record for record in records
+                if str(record.get("Workspace Name") or "") in selected_workspaces
+            ]
+            with st.spinner(f"Scanning {len(scoped_records)} report(s) for '{normalized_query}'..."):
+                st.session_state["table_impact_analysis_result"] = _build_table_impact_analysis(
+                    scoped_records,
+                    normalized_query,
+                    include_partial,
+                    headersSPA,
+                    xmla_token,
+                    fabric_headers=fabric_headers,
+                )
+
+    result = st.session_state.get("table_impact_analysis_result")
+    if not isinstance(result, dict):
+        return
+
+    st.write(f"#### Impact results: {result.get('query')}")
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Reports scanned", result.get("reports_scanned", 0))
+    metric_columns[1].metric("Affected reports", result.get("affected_reports", 0))
+    metric_columns[2].metric("Distinct measures", result.get("distinct_measures", 0))
+    metric_columns[3].metric("Affected models", result.get("affected_models", 0))
+    st.caption(
+        f"Visual-confirmed reports: {result.get('visual_confirmed_reports', 0)} of {result.get('affected_reports', 0)}. "
+        f"Visual metadata inspected: {result.get('visual_metadata_reports', 0)} report(s). "
+        "Affected reports are model-level dependencies; visual confirmation is based on parsed report-definition fields."
+    )
+    if result.get("affected_reports") and not result.get("visual_metadata_reports"):
+        st.warning(
+            "Visual confirmation could not inspect the affected report definition. Complete Fabric authorization above, then run the analysis again."
+        )
+
+    report_rows = result.get("report_rows") or []
+    measure_rows = result.get("measure_rows") or []
+    if not report_rows:
+        st.info("No matching table was found in the selected report models.")
+        if result.get("errors"):
+            st.warning(f"{len(result['errors'])} semantic model scan(s) returned an error.")
+        return
+
+    report_tab, measure_tab = st.tabs(["Affected Reports", "Measure Dependencies"])
+    result_key = hashlib.md5(
+        f"{result.get('query')}|{result.get('include_partial')}".encode("utf-8")
+    ).hexdigest()[:10]
+
+    with report_tab:
+        report_df = _clean_dataframe_for_display(pd.DataFrame(report_rows))
+        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        render_csv_download(
+            report_df,
+            "Download affected reports as CSV",
+            "table_impact_affected_reports.csv",
+            f"table_impact_reports_download_{result_key}",
+        )
+
+    with measure_tab:
+        if measure_rows:
+            measure_df = _clean_dataframe_for_display(pd.DataFrame(measure_rows))
+            st.dataframe(measure_df, use_container_width=True, hide_index=True)
+            render_csv_download(
+                measure_df,
+                "Download measure dependencies as CSV",
+                "table_impact_measure_dependencies.csv",
+                f"table_impact_measures_download_{result_key}",
+            )
+        else:
+            st.info("The table exists in an affected model, but no exposed measure dependency was returned.")
+
+    if result.get("skipped_reports"):
+        st.warning(f"Skipped {result['skipped_reports']} report(s) without a resolvable workspace or dataset ID.")
+    if result.get("errors"):
+        with st.expander("Model scan errors", expanded=False):
+            st.dataframe(pd.DataFrame(result["errors"]), use_container_width=True, hide_index=True)
+    if result.get("visual_errors"):
+        with st.expander("Visual metadata retrieval details", expanded=False):
+            st.dataframe(pd.DataFrame(result["visual_errors"]), use_container_width=True, hide_index=True)
+
+
+def _measure_name_matches(value, query, include_partial=False):
+    candidate = normalize_identifier(value)
+    target = normalize_identifier(query)
+    if not candidate or not target:
+        return False
+    return candidate == target or (include_partial and target in candidate)
+
+
+def _measure_impact_visual_evidence(layout_records, measure_names):
+    measure_markers = {
+        normalize_identifier(name): str(name)
+        for name in measure_names
+        if normalize_identifier(name)
+    }
+    matching_rows = []
+    confirmed_markers = set()
+
+    for row in layout_records:
+        direct_candidates = [
+            row.get("Column / Measure Name"),
+            row.get("Visual Field Name"),
+            row.get("Semantic_Object_Name"),
+        ]
+        query_candidates = [
+            row.get("Query Reference"),
+            row.get("QueryRef"),
+        ]
+        row_matches = set()
+        for candidate in direct_candidates:
+            marker = normalize_identifier(candidate)
+            if marker in measure_markers:
+                row_matches.add(marker)
+        for candidate in query_candidates:
+            candidate_marker = normalize_identifier(candidate)
+            for marker in measure_markers:
+                if candidate_marker == marker or candidate_marker.endswith(marker):
+                    row_matches.add(marker)
+
+        if row_matches:
+            matching_rows.append(row)
+            confirmed_markers.update(row_matches)
+
+    visual_keys = {
+        (
+            str(row.get("Report ID") or ""),
+            str(row.get("Page Name") or ""),
+            str(row.get("Visual ID") or row.get("Visual Name") or ""),
+        )
+        for row in matching_rows
+    }
+    return matching_rows, len(visual_keys), confirmed_markers
+
+
+def _build_measure_impact_analysis(
+    records,
+    measure_query,
+    include_partial,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    fabric_headers=None,
+):
+    contexts = [direct_report_context(record) for record in records]
+    model_groups = {}
+    skipped_reports = 0
+    for context in contexts:
+        dataset_id = str(context.get("Dataset ID") or "").strip()
+        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        if not dataset_id or not workspace_id:
+            skipped_reports += 1
+            continue
+        model_groups.setdefault((workspace_id, dataset_id), []).append(context)
+
+    report_rows = []
+    lineage_rows = []
+    matching_measure_keys = set()
+    affected_model_keys = set()
+    confirmed_report_keys = set()
+    visual_metadata_report_keys = set()
+    visual_errors = []
+    scan_errors = []
+    progress = st.progress(0, text="Preparing measure impact scan...")
+    groups = list(model_groups.items())
+
+    for index, (model_key, report_contexts) in enumerate(groups):
+        representative = report_contexts[0]
+        progress.progress(
+            (index + 1) / max(1, len(groups)),
+            text=f"Scanning model {index + 1} of {len(groups)}: {representative.get('Source Report') or model_key[1]}",
+        )
+        try:
+            catalog_rows = _get_semantic_objects_for_contexts(
+                [representative],
+                headersSPA,
+                headersSP,
+                xmla_token,
+                "measure_impact",
+            )
+            dependency_rows = _get_measure_lineage_rows_for_contexts(
+                [representative],
+                headersSPA,
+                xmla_token,
+                "measure_impact",
+            )
+
+            matching_catalog = [
+                row for row in catalog_rows
+                if _semantic_dependency_type(row.get("Object Type")) == "MEASURE"
+                and _measure_name_matches(
+                    row.get("Semantic Object Name"),
+                    measure_query,
+                    include_partial,
+                )
+            ]
+            matching_dependencies = [
+                row for row in dependency_rows
+                if _is_meaningful_value(_table_impact_measure_name(row))
+                and _measure_name_matches(
+                    _table_impact_measure_name(row),
+                    measure_query,
+                    include_partial,
+                )
+            ]
+
+            measure_metadata = {}
+            for row in matching_catalog:
+                measure_name = str(row.get("Semantic Object Name"))
+                marker = normalize_identifier(measure_name)
+                measure_metadata.setdefault(marker, {
+                    "name": measure_name,
+                    "home_table": row.get("Semantic Table/View"),
+                    "dax": row.get("DAX Expression"),
+                    "catalog": row,
+                })
+            for row in matching_dependencies:
+                measure_name = _table_impact_measure_name(row)
+                marker = normalize_identifier(measure_name)
+                measure_metadata.setdefault(marker, {
+                    "name": measure_name,
+                    "home_table": row.get("Target Table/View"),
+                    "dax": row.get("Target Expression"),
+                    "catalog": None,
+                })
+
+            if not measure_metadata:
+                continue
+
+            affected_model_keys.add(model_key)
+            for marker, metadata in measure_metadata.items():
+                matching_measure_keys.add((
+                    model_key[1],
+                    normalize_identifier(metadata.get("home_table")),
+                    marker,
+                ))
+
+            model_measure_names = sorted(
+                [metadata["name"] for metadata in measure_metadata.values()],
+                key=str.casefold,
+            )
+            dependency_by_measure = {}
+            for dependency_row in matching_dependencies:
+                marker = normalize_identifier(_table_impact_measure_name(dependency_row))
+                dependency_by_measure.setdefault(marker, []).append(dependency_row)
+
+            for context in report_contexts:
+                layout_records, layout_source, layout_error = _impact_visual_layout_records(
+                    context,
+                    headersSPA,
+                    fabric_headers=fabric_headers,
+                )
+                _, visual_count, visual_measure_markers = _measure_impact_visual_evidence(
+                    layout_records,
+                    model_measure_names,
+                )
+                report_key = str(context.get("Report ID") or context.get("Source Report") or "")
+                if layout_records:
+                    visual_metadata_report_keys.add(report_key)
+                elif layout_error:
+                    visual_errors.append({
+                        "Workspace": context.get("Workspace"),
+                        "Report": context.get("Source Report"),
+                        "Report ID": context.get("Report ID"),
+                        "Error": layout_error,
+                    })
+                if visual_count:
+                    confirmed_report_keys.add(report_key)
+                    visual_evidence = f"Confirmed ({visual_count} visual(s))"
+                elif layout_records:
+                    visual_evidence = "No direct visual match"
+                else:
+                    visual_evidence = "Visual metadata unavailable" if layout_error else "Visual metadata not loaded"
+
+                report_rows.append({
+                    "Workspace": context.get("Workspace"),
+                    "Report": context.get("Source Report"),
+                    "Report ID": context.get("Report ID"),
+                    "Dataset ID": context.get("Dataset ID"),
+                    "Matching Measure Count": len(model_measure_names),
+                    "Matching Measures": "; ".join(model_measure_names),
+                    "Usage Basis": "Measure exists in connected semantic model",
+                    "Visual Evidence": visual_evidence,
+                    "Visual Metadata Source": layout_source,
+                })
+
+                for marker, metadata in measure_metadata.items():
+                    dependencies = dependency_by_measure.get(marker) or [None]
+                    for dependency_row in dependencies:
+                        dependency_row = dependency_row or {}
+                        lineage_rows.append({
+                            "Workspace": context.get("Workspace"),
+                            "Report": context.get("Source Report"),
+                            "Report ID": context.get("Report ID"),
+                            "Dataset ID": context.get("Dataset ID"),
+                            "Measure": metadata.get("name"),
+                            "Measure Home Table": _prefer_non_na(
+                                dependency_row.get("Target Table/View"),
+                                metadata.get("home_table"),
+                            ),
+                            "DAX Expression": _prefer_non_na(
+                                dependency_row.get("Target Expression"),
+                                metadata.get("dax"),
+                            ),
+                            "Dependency Table": dependency_row.get("Semantic Table/View", "N/A"),
+                            "Dependency Object": dependency_row.get("Semantic Object Name", "N/A"),
+                            "Dependency Object Type": dependency_row.get("Semantic Object Type", "N/A"),
+                            "Dependency Expression": dependency_row.get("Dependency Expression", "N/A"),
+                            "Source Database": dependency_row.get("Exact Source Database", "N/A"),
+                            "Source Schema": dependency_row.get("Exact Source Schema", "N/A"),
+                            "Source Table/View": dependency_row.get("Exact Source Table/View", "N/A"),
+                            "Source Column": dependency_row.get("Exact Source Column Name", "N/A"),
+                            "Source Fully Qualified Object": dependency_row.get("Fully Qualified Source Object", "N/A"),
+                            "Visual Usage": (
+                                "Confirmed"
+                                if marker in visual_measure_markers
+                                else visual_evidence
+                            ),
+                        })
+        except Exception as exc:
+            scan_errors.append({
+                "Dataset ID": model_key[1],
+                "Report": representative.get("Source Report"),
+                "Error": str(exc),
+            })
+
+    progress.empty()
+
+    report_df = pd.DataFrame(report_rows).drop_duplicates(
+        subset=["Report ID", "Dataset ID"],
+        keep="first",
+    ) if report_rows else pd.DataFrame()
+    lineage_df = pd.DataFrame(lineage_rows).drop_duplicates(
+        subset=[
+            "Report ID",
+            "Dataset ID",
+            "Measure",
+            "Dependency Table",
+            "Dependency Object",
+            "Source Fully Qualified Object",
+            "Source Column",
+        ],
+        keep="first",
+    ) if lineage_rows else pd.DataFrame()
+
+    return {
+        "query": measure_query,
+        "include_partial": include_partial,
+        "reports_scanned": len(records),
+        "models_scanned": len(model_groups),
+        "skipped_reports": skipped_reports,
+        "affected_models": len(affected_model_keys),
+        "affected_reports": len(report_df),
+        "matching_measures": len(matching_measure_keys),
+        "visual_confirmed_reports": len(confirmed_report_keys),
+        "visual_metadata_reports": len(visual_metadata_report_keys),
+        "report_rows": report_df.to_dict("records"),
+        "lineage_rows": lineage_df.to_dict("records"),
+        "visual_errors": visual_errors,
+        "errors": scan_errors,
+    }
+
+
+def render_measure_impact_analysis_view(records, headersSPA, headersSP, xmla_token):
+    """Reverse-search a measure across accessible semantic models and reports."""
+    st.write("### Measure Impact Analysis")
+    st.caption("Trace a measure forward to connected reports and backward to semantic and physical source dependencies.")
+    fabric_headers = render_fabric_definition_authorization("measure_impact_visual_confirmation")
+
+    workspace_options = sorted({
+        str(record.get("Workspace Name"))
+        for record in records
+        if record.get("Workspace Name")
+    }, key=str.casefold)
+
+    with st.form("measure_impact_analysis_form", border=True):
+        measure_query = st.text_input(
+            "Measure name",
+            placeholder="Example: Total Sales",
+        )
+        selected_workspaces = st.multiselect(
+            "Workspace scope",
+            options=workspace_options,
+            default=workspace_options,
+        )
+        include_partial = st.toggle(
+            "Include partial-name matches",
+            value=False,
+            help="Use this to find multiple measures when the exact measure name is unknown.",
+        )
+        submitted = st.form_submit_button(
+            "Run measure impact analysis",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if submitted:
+        normalized_query = str(measure_query or "").strip()
+        if not normalized_query:
+            st.warning("Enter a measure name.")
+        elif not selected_workspaces:
+            st.warning("Select at least one workspace to scan.")
+        else:
+            scoped_records = [
+                record for record in records
+                if str(record.get("Workspace Name") or "") in selected_workspaces
+            ]
+            with st.spinner(f"Scanning {len(scoped_records)} report(s) for '{normalized_query}'..."):
+                st.session_state["measure_impact_analysis_result"] = _build_measure_impact_analysis(
+                    scoped_records,
+                    normalized_query,
+                    include_partial,
+                    headersSPA,
+                    headersSP,
+                    xmla_token,
+                    fabric_headers=fabric_headers,
+                )
+
+    result = st.session_state.get("measure_impact_analysis_result")
+    if not isinstance(result, dict):
+        return
+
+    st.write(f"#### Impact results: {result.get('query')}")
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Reports scanned", result.get("reports_scanned", 0))
+    metric_columns[1].metric("Affected reports", result.get("affected_reports", 0))
+    metric_columns[2].metric("Matching measures", result.get("matching_measures", 0))
+    metric_columns[3].metric("Affected models", result.get("affected_models", 0))
+    st.caption(
+        f"Visual-confirmed reports: {result.get('visual_confirmed_reports', 0)} of {result.get('affected_reports', 0)}. "
+        f"Visual metadata inspected: {result.get('visual_metadata_reports', 0)} report(s). "
+        "Affected reports are connected to a model containing the measure; visual confirmation is based on parsed report-definition fields."
+    )
+    if result.get("affected_reports") and not result.get("visual_metadata_reports"):
+        st.warning(
+            "Visual confirmation could not inspect the affected report definition. Complete Fabric authorization above, then run the analysis again."
+        )
+
+    report_rows = result.get("report_rows") or []
+    lineage_rows = result.get("lineage_rows") or []
+    if not report_rows:
+        st.info("No matching measure was found in the selected report models.")
+        if result.get("errors"):
+            st.warning(f"{len(result['errors'])} semantic model scan(s) returned an error.")
+        return
+
+    report_tab, lineage_tab = st.tabs(["Affected Reports", "Measure Lineage"])
+    result_key = hashlib.md5(
+        f"{result.get('query')}|{result.get('include_partial')}".encode("utf-8")
+    ).hexdigest()[:10]
+
+    with report_tab:
+        report_df = _clean_dataframe_for_display(pd.DataFrame(report_rows))
+        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        render_csv_download(
+            report_df,
+            "Download affected reports as CSV",
+            "measure_impact_affected_reports.csv",
+            f"measure_impact_reports_download_{result_key}",
+        )
+
+    with lineage_tab:
+        lineage_df = _clean_dataframe_for_display(pd.DataFrame(lineage_rows))
+        st.dataframe(lineage_df, use_container_width=True, hide_index=True)
+        render_csv_download(
+            lineage_df,
+            "Download measure lineage as CSV",
+            "measure_impact_lineage.csv",
+            f"measure_impact_lineage_download_{result_key}",
+        )
+
+    if result.get("skipped_reports"):
+        st.warning(f"Skipped {result['skipped_reports']} report(s) without a resolvable workspace or dataset ID.")
+    if result.get("errors"):
+        with st.expander("Model scan errors", expanded=False):
+            st.dataframe(pd.DataFrame(result["errors"]), use_container_width=True, hide_index=True)
+    if result.get("visual_errors"):
+        with st.expander("Visual metadata retrieval details", expanded=False):
+            st.dataframe(pd.DataFrame(result["visual_errors"]), use_container_width=True, hide_index=True)
+
+
 def _safe_widget_key(value):
     """Create a stable Streamlit widget key fragment from an arbitrary file/report name."""
     return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "value"))[:120]
@@ -8940,6 +9832,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+from pbi_modules.table_impact import (
+    MEASURE_TABLE_FIELDS,
+    SOURCE_TABLE_FIELDS,
+    find_table_match,
+    normalize_identifier,
+    table_value_matches,
+)
 
 _ensure_browser_auth_cookie()
 
@@ -9189,6 +10088,29 @@ st.markdown(
         section[data-testid="stSidebar"] div.stButton > button p {
             font-size: 0.93rem;
             text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        section[data-testid="stSidebar"] div.stButton > button > div {
+            width: 100%;
+            justify-content: flex-start !important;
+            text-align: left;
+        }
+        section[data-testid="stSidebar"] div.stButton > button > div > span {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1.25rem minmax(0, 1fr);
+            align-items: center;
+            justify-content: start !important;
+            column-gap: 0.65rem;
+        }
+        section[data-testid="stSidebar"] div.stButton > button span[class*="material-symbols"] {
+            width: 1.25rem;
+            min-width: 1.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
         .lineage-sidebar-separator {
             height: 1px;
@@ -9728,7 +10650,10 @@ headersSP = headersMU
 headersSPA = headersMU
 
 workflow_mode = st.session_state.get("workflow_mode", "landing")
-if workflow_mode not in {"landing", "guided", "direct_measure"}:
+if workflow_mode == "direct_measure":
+    workflow_mode = "report_lineage"
+    st.session_state.workflow_mode = workflow_mode
+if workflow_mode not in {"landing", "guided", "report_lineage", "table_impact", "measure_impact"}:
     workflow_mode = "landing"
     st.session_state.workflow_mode = workflow_mode
 
@@ -9742,7 +10667,7 @@ if workflow_mode == "landing":
     )
     st.stop()
 
-if workflow_mode == "direct_measure":
+if workflow_mode == "report_lineage":
     render_direct_measure_lookup_page(
         headersSPA,
         headersSP,
@@ -9755,6 +10680,30 @@ if workflow_mode == "direct_measure":
         render_report_layout_view=render_upload_only_report_layout_view,
         render_visual_source_lookup_view=render_visual_source_lookup_view,
         safe_widget_key=_safe_widget_key,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
+    st.stop()
+
+if workflow_mode == "table_impact":
+    render_table_impact_page(
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        render_table_impact_analysis_view=render_table_impact_analysis_view,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
+    st.stop()
+
+if workflow_mode == "measure_impact":
+    render_measure_impact_page(
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        render_measure_impact_analysis_view=render_measure_impact_analysis_view,
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )

@@ -65,7 +65,7 @@ def _remember_recent_report(record):
 def _activate_direct_report(record):
     st.session_state.direct_measure_active_context = direct_report_context(record)
     _remember_recent_report(record)
-    st.session_state.workflow_mode = "direct_measure"
+    st.session_state.workflow_mode = "report_lineage"
     st.rerun()
 
 
@@ -87,13 +87,16 @@ def check_authenticated_session(logout_and_clear_session):
 def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, mode_label=None):
     """Render persistent authenticated navigation in the left sidebar."""
     normalized_mode = str(mode_label or "").strip().casefold()
-    active_destination = (
-        "home"
-        if normalized_mode == "home"
-        else "measures"
-        if "measure" in normalized_mode
-        else "explore"
-    )
+    destination_aliases = {
+        "home": "home",
+        "guided workflow": "explore",
+        "explore": "explore",
+        "direct measure lookup": "report_lineage",
+        "report lineage": "report_lineage",
+        "table impact": "table_impact",
+        "measure impact": "measure_impact",
+    }
+    active_destination = destination_aliases.get(normalized_mode, "explore")
 
     with st.sidebar:
         st.markdown(
@@ -130,13 +133,31 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
             _set_workflow("guided")
 
         if st.button(
-            "Measures",
-            key="top_measures",
-            type="primary" if active_destination == "measures" else "tertiary",
+            "Report Lineage",
+            key="top_report_lineage",
+            type="primary" if active_destination == "report_lineage" else "tertiary",
+            icon=":material/account_tree:",
+            use_container_width=True,
+        ):
+            _set_workflow("report_lineage")
+
+        if st.button(
+            "Table Impact",
+            key="top_table_impact",
+            type="primary" if active_destination == "table_impact" else "tertiary",
+            icon=":material/table_view:",
+            use_container_width=True,
+        ):
+            _set_workflow("table_impact")
+
+        if st.button(
+            "Measure Impact",
+            key="top_measure_impact",
+            type="primary" if active_destination == "measure_impact" else "tertiary",
             icon=":material/functions:",
             use_container_width=True,
         ):
-            _set_workflow("direct_measure")
+            _set_workflow("measure_impact")
 
         st.markdown(
             """
@@ -343,11 +364,13 @@ def render_workflow_choice_page(
         if st.button("Refresh inventory", use_container_width=True):
             st.session_state.pop("accessible_lineage_inventory_v2", None)
             st.session_state.pop("direct_lookup_report_records_v1", None)
+            st.session_state.pop("table_impact_analysis_result", None)
+            st.session_state.pop("measure_impact_analysis_result", None)
             st.rerun()
 
     quick_actions = [
         ("01", "Explore a report", "Workspace, report, semantic objects, and lineage", "Explore", "guided"),
-        ("02", "Find a measure", "Definitions, DAX logic, and column lineage", "Find measure", "direct_measure"),
+        ("02", "Report lineage", "Definitions, DAX logic, and visual lineage", "Open lineage", "report_lineage"),
     ]
     action_layout = st.columns([0.75, 1.5, 1.5, 0.75])
     for column, (number, title, copy, button_label, mode) in zip(action_layout[1:3], quick_actions):
@@ -366,7 +389,7 @@ def render_workflow_choice_page(
                 if st.button(button_label, key=f"home_action_{number}", use_container_width=True):
                     _set_workflow(mode)
 
-    st.markdown('<div class="section-heading report-section-heading"><strong>Accessible reports</strong><span>Open a report directly in measure and lineage analysis.</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-heading report-section-heading"><strong>Accessible reports</strong><span>Open a report directly in report lineage analysis.</span></div>', unsafe_allow_html=True)
     if not reports:
         st.info("No accessible reports were returned for this account.")
     else:
@@ -453,14 +476,14 @@ def render_direct_measure_lookup_page(
     logout_and_clear_session,
     clear_streamlit_session_state,
 ):
-    """Search a report by name and render measure definitions/lineage directly."""
-    render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, "Direct measure lookup")
+    """Search a report and render its report, semantic, and visual lineage."""
+    render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, "Report Lineage")
     st.markdown(
         """
         <div class="page-header">
-            <div class="page-eyebrow">Measure Search</div>
-            <h2>Direct Measure Lookup</h2>
-            <p>Search the reports visible to the signed-in account, open one report, then work with its measure definitions and source lineage directly.</p>
+            <div class="page-eyebrow">Report Analysis</div>
+            <h2>Report Lineage</h2>
+            <p>Search the reports visible to the signed-in account, then inspect source data, semantic objects, measures, and visual-level lineage.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -480,6 +503,8 @@ def render_direct_measure_lookup_page(
     if not records:
         st.info("No reports were returned for the signed-in user.")
         return
+
+    xmla_token = st.session_state.auth_bundle["spa"]
 
     with st.container(border=True):
         selected_index = st.selectbox(
@@ -519,8 +544,7 @@ def render_direct_measure_lookup_page(
     )
 
     report_key = safe_widget_key(context.get("Report ID"))
-    scope_key = f"direct_measure_{report_key}"
-    xmla_token = st.session_state.auth_bundle["spa"]
+    scope_key = f"report_lineage_{report_key}"
     lineage_tab, visual_details_tab, visual_item_lineage_tab = st.tabs([
         "Lineage Analysis",
         "Visual Details",
@@ -541,8 +565,8 @@ def render_direct_measure_lookup_page(
                 [context],
                 headersSPA,
                 xmla_token,
-                f"direct_measure_{report_key}",
-                f"direct_measure_source_db_download_{report_key}",
+                f"report_lineage_{report_key}",
+                f"report_lineage_source_db_download_{report_key}",
             )
 
         with semantic_objects_tab:
@@ -551,8 +575,8 @@ def render_direct_measure_lookup_page(
                 headersSPA,
                 headersSP,
                 xmla_token,
-                f"direct_measure_{report_key}",
-                f"direct_measure_semantic_objects_download_{report_key}",
+                f"report_lineage_{report_key}",
+                f"report_lineage_semantic_objects_download_{report_key}",
             )
 
         with measure_lineage_tab:
@@ -560,8 +584,8 @@ def render_direct_measure_lookup_page(
                 [context],
                 headersSPA,
                 xmla_token,
-                f"direct_measure_{report_key}",
-                f"direct_measure_lookup_download_{report_key}",
+                f"report_lineage_{report_key}",
+                f"report_lineage_lookup_download_{report_key}",
             )
 
     with visual_details_tab:
@@ -570,7 +594,7 @@ def render_direct_measure_lookup_page(
         render_report_layout_view(
             [context],
             scope_key,
-            f"direct_measure_report_layout_download_{report_key}",
+            f"report_lineage_report_layout_download_{report_key}",
             powerbi_headers=headersSPA,
         )
 
@@ -584,5 +608,103 @@ def render_direct_measure_lookup_page(
             xmla_token,
             scope_key,
             scope_key,
-            f"direct_measure_visual_lineage_download_{report_key}",
+            f"report_lineage_visual_lineage_download_{report_key}",
         )
+
+
+def _render_impact_page(
+    headersSPA,
+    headersSP,
+    *,
+    title,
+    eyebrow,
+    description,
+    render_analysis_view,
+    get_workspace_inventory,
+    get_artifacts,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, title)
+    st.markdown(
+        f"""
+        <div class="page-header">
+            <div class="page-eyebrow">{html.escape(eyebrow)}</div>
+            <h2>{html.escape(title)}</h2>
+            <p>{html.escape(description)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    refresh_col, _ = st.columns([1, 4])
+    with refresh_col:
+        if st.button("Refresh inventory", key=f"refresh_{title.casefold().replace(' ', '_')}", use_container_width=True):
+            st.session_state.pop("accessible_lineage_inventory_v2", None)
+            st.session_state.pop("direct_lookup_report_records_v1", None)
+            st.session_state.pop("table_impact_analysis_result", None)
+            st.session_state.pop("measure_impact_analysis_result", None)
+            st.rerun()
+
+    with st.spinner("Loading accessible reports..."):
+        records = get_direct_lookup_report_records(headersSP, get_workspace_inventory, get_artifacts)
+    if not records:
+        st.info("No reports were returned for the signed-in user.")
+        return
+
+    render_analysis_view(
+        records,
+        headersSPA,
+        headersSP,
+        st.session_state.auth_bundle["spa"],
+    )
+
+
+def render_table_impact_page(
+    headersSPA,
+    headersSP,
+    *,
+    get_workspace_inventory,
+    get_artifacts,
+    render_table_impact_analysis_view,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    """Render a standalone table-to-measure/report impact search."""
+    _render_impact_page(
+        headersSPA,
+        headersSP,
+        title="Table Impact",
+        eyebrow="Reverse Lineage",
+        description="Search a semantic or source table and trace its dependent measures, connected models, reports, and cached visual usage.",
+        render_analysis_view=render_table_impact_analysis_view,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
+
+
+def render_measure_impact_page(
+    headersSPA,
+    headersSP,
+    *,
+    get_workspace_inventory,
+    get_artifacts,
+    render_measure_impact_analysis_view,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    """Render a standalone measure-to-report/source impact search."""
+    _render_impact_page(
+        headersSPA,
+        headersSP,
+        title="Measure Impact",
+        eyebrow="Reverse Lineage",
+        description="Search a measure and trace the connected reports, semantic dependencies, physical source objects, and cached visual usage.",
+        render_analysis_view=render_measure_impact_analysis_view,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
