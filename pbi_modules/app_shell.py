@@ -85,50 +85,79 @@ def check_authenticated_session(logout_and_clear_session):
 
 
 def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, mode_label=None):
-    """Render the authenticated application header."""
-    top_col_title, home_col, explore_col, measure_col, top_col_status, logout_col = st.columns(
-        [3.4, 0.72, 0.82, 0.9, 0.82, 0.76],
-        vertical_alignment="center",
+    """Render persistent authenticated navigation in the left sidebar."""
+    normalized_mode = str(mode_label or "").strip().casefold()
+    active_destination = (
+        "home"
+        if normalized_mode == "home"
+        else "measures"
+        if "measure" in normalized_mode
+        else "explore"
     )
 
-    with top_col_title:
+    with st.sidebar:
         st.markdown(
             """
-            <div class="app-top-strip">
-                <div class="app-brand-mark">PBI</div>
-                <div class="app-brand-copy">
-                    <div class="app-top-title">PBI Lineage Explorer</div>
+            <div class="lineage-sidebar-brand">
+                <div class="lineage-sidebar-mark">PBI</div>
+                <div class="lineage-sidebar-copy">
+                    <div class="lineage-sidebar-title">Lineage</div>
+                    <div class="lineage-sidebar-caption">Explorer</div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with home_col:
-        if st.button("Home", key="top_home", use_container_width=True):
+        st.markdown('<div class="lineage-nav-label">Navigation</div>', unsafe_allow_html=True)
+
+        if st.button(
+            "Home",
+            key="top_home",
+            type="primary" if active_destination == "home" else "tertiary",
+            icon=":material/home:",
+            use_container_width=True,
+        ):
             _set_workflow("landing")
 
-    with explore_col:
-        if st.button("Explore", key="top_explore", use_container_width=True):
+        if st.button(
+            "Explore",
+            key="top_explore",
+            type="primary" if active_destination == "explore" else "tertiary",
+            icon=":material/explore:",
+            use_container_width=True,
+        ):
             _set_workflow("guided")
 
-    with measure_col:
-        if st.button("Measures", key="top_measures", use_container_width=True):
+        if st.button(
+            "Measures",
+            key="top_measures",
+            type="primary" if active_destination == "measures" else "tertiary",
+            icon=":material/functions:",
+            use_container_width=True,
+        ):
             _set_workflow("direct_measure")
 
-    with top_col_status:
         st.markdown(
             """
-            <div class="app-status-panel">
+            <div class="lineage-sidebar-separator"></div>
+            <div class="lineage-sidebar-status">
                 <span class="app-status-dot"></span>
-                <span class="app-status-text">Connected</span>
+                <span>
+                    <strong>Connected</strong>
+                    <small>Power BI session active</small>
+                </span>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with logout_col:
-        if st.button("Logout", key="top_logout", use_container_width=True):
+        if st.button(
+            "Logout",
+            key="top_logout",
+            icon=":material/logout:",
+            use_container_width=True,
+        ):
             with st.spinner("Releasing tokens and clearing session cache..."):
                 try:
                     logout_and_clear_session()
@@ -415,6 +444,8 @@ def render_direct_measure_lookup_page(
     *,
     get_workspace_inventory,
     get_artifacts,
+    render_source_db_lineage_view,
+    render_semantic_model_objects_view,
     render_measure_source_lineage_view,
     render_report_layout_view,
     render_visual_source_lookup_view,
@@ -497,13 +528,41 @@ def render_direct_measure_lookup_page(
     ])
 
     with lineage_tab:
-        render_measure_source_lineage_view(
-            [context],
-            headersSPA,
-            xmla_token,
-            f"direct_measure_lookup_{report_key}",
-            f"direct_measure_lookup_download_{report_key}",
-        )
+        st.write("### Artifact Lineage")
+        st.caption("Showing lineage for 1 selected report. Change the report selection above to inspect another report.")
+        source_lineage_tab, semantic_objects_tab, measure_lineage_tab = st.tabs([
+            "Source DB Lineage",
+            "Semantic Model Objects",
+            "Measure Source Lineage",
+        ])
+
+        with source_lineage_tab:
+            render_source_db_lineage_view(
+                [context],
+                headersSPA,
+                xmla_token,
+                f"direct_measure_{report_key}",
+                f"direct_measure_source_db_download_{report_key}",
+            )
+
+        with semantic_objects_tab:
+            render_semantic_model_objects_view(
+                [context],
+                headersSPA,
+                headersSP,
+                xmla_token,
+                f"direct_measure_{report_key}",
+                f"direct_measure_semantic_objects_download_{report_key}",
+            )
+
+        with measure_lineage_tab:
+            render_measure_source_lineage_view(
+                [context],
+                headersSPA,
+                xmla_token,
+                f"direct_measure_{report_key}",
+                f"direct_measure_lookup_download_{report_key}",
+            )
 
     with visual_details_tab:
         st.write("### Visual Details")

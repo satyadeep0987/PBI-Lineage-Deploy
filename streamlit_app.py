@@ -19,6 +19,8 @@ import io
 import json
 import html
 import hashlib
+import secrets
+import threading
 import streamlit.components.v1 as components
 from xmla_ado_com import connect_xmla
 from pathlib import PurePosixPath
@@ -98,6 +100,155 @@ _FABRIC_DEVICE_FLOW_STATE_KEY = "msal_fabric_device_flow"
 _GENERIC_AAD_AUTHORITY_TENANTS = {"common", "organizations", "consumers"}
 _FABRIC_API_BASE_URL = "https://api.fabric.microsoft.com/v1"
 _DEFAULT_FABRIC_REPORT_SCOPES = ["https://api.fabric.microsoft.com/Report.ReadWrite.All"]
+_BROWSER_AUTH_COOKIE_NAME = "pbi_lineage_browser"
+_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_BROWSER_AUTH_COOKIE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+_PENDING_BROWSER_AUTH_COOKIE_KEY = "pending_browser_auth_cookie"
+
+
+@st.cache_resource(show_spinner=False)
+def _browser_auth_registry():
+    """Keep authenticated bundles across WebSocket reconnects in this app process."""
+    return {"lock": threading.RLock(), "sessions": {}}
+
+
+def _browser_auth_cookie_value():
+    """Return the app-owned opaque browser identifier when it is valid."""
+    try:
+        cookie_value = str(st.context.cookies.get(_BROWSER_AUTH_COOKIE_NAME) or "").strip()
+    except Exception:
+        cookie_value = ""
+
+    if not _BROWSER_AUTH_COOKIE_PATTERN.fullmatch(cookie_value):
+        return None
+    return cookie_value
+
+
+def _browser_auth_key_from_cookie(cookie_value):
+    if not cookie_value:
+        return None
+    return hashlib.sha256(f"pbi-lineage-v2:{cookie_value}".encode("utf-8")).hexdigest()
+
+
+def _browser_auth_key():
+    """Return the server-side registry key for this browser."""
+    return _browser_auth_key_from_cookie(_browser_auth_cookie_value())
+
+
+def _purge_expired_browser_auth(sessions, now=None):
+    now = time.time() if now is None else now
+    expired_keys = [
+        key
+        for key, bundle in sessions.items()
+        if float((bundle or {}).get("expires_at") or 0) <= now
+    ]
+    for key in expired_keys:
+        sessions.pop(key, None)
+
+
+def _persist_browser_auth_for_key(browser_key, bundle):
+    if not browser_key or not isinstance(bundle, dict):
+        return
+
+    now = time.time()
+    if float(bundle.get("expires_at") or 0) <= now:
+        return
+
+    registry = _browser_auth_registry()
+    with registry["lock"]:
+        _purge_expired_browser_auth(registry["sessions"], now)
+        registry["sessions"][browser_key] = dict(bundle)
+
+
+def _persist_browser_auth(bundle):
+    """Store tokens server-side so browser refresh/back-forward can reconnect."""
+    _persist_browser_auth_for_key(_browser_auth_key(), bundle)
+
+
+def _ensure_browser_auth_cookie():
+    """Create a stable opaque browser ID before rendering login or app pages."""
+    browser_cookie = _browser_auth_cookie_value()
+    if browser_cookie:
+        existing_bundle = st.session_state.get("auth_bundle")
+        if existing_bundle:
+            _persist_browser_auth_for_key(
+                _browser_auth_key_from_cookie(browser_cookie),
+                existing_bundle,
+            )
+        return
+
+    pending_cookie = str(
+        st.session_state.get(_PENDING_BROWSER_AUTH_COOKIE_KEY) or ""
+    ).strip()
+    if not _BROWSER_AUTH_COOKIE_PATTERN.fullmatch(pending_cookie):
+        pending_cookie = secrets.token_urlsafe(32)
+        st.session_state[_PENDING_BROWSER_AUTH_COOKIE_KEY] = pending_cookie
+
+    # Preserve an already authenticated tab while moving it from the rotating
+    # Streamlit XSRF cookie to the app-owned stable browser identifier.
+    existing_bundle = st.session_state.get("auth_bundle")
+    if existing_bundle:
+        _persist_browser_auth_for_key(
+            _browser_auth_key_from_cookie(pending_cookie),
+            existing_bundle,
+        )
+
+    cookie_name_json = json.dumps(_BROWSER_AUTH_COOKIE_NAME)
+    cookie_value_json = json.dumps(pending_cookie)
+    components.html(
+        f"""
+        <div id="pbi-cookie-status" role="status"></div>
+        <script>
+          const cookieName = {cookie_name_json};
+          const cookieValue = {cookie_value_json};
+          const secure = window.parent.location.protocol === "https:" ? "; Secure" : "";
+          document.cookie = `${{cookieName}}=${{encodeURIComponent(cookieValue)}}; Path=/; SameSite=Lax; Max-Age={_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS}${{secure}}`;
+          const cookieWasSet = document.cookie
+            .split(";")
+            .some(part => part.trim().startsWith(`${{cookieName}}=`));
+          if (cookieWasSet) {{
+            window.setTimeout(() => window.parent.location.reload(), 100);
+          }} else {{
+            document.getElementById("pbi-cookie-status").textContent =
+              "Browser cookies are required to keep your Power BI session active.";
+          }}
+        </script>
+        <style>
+          #pbi-cookie-status {{
+            color: #991b1b;
+            font: 600 13px/1.4 sans-serif;
+            padding: 6px 8px;
+          }}
+        </style>
+        """,
+        height=36,
+    )
+    st.stop()
+
+
+def _restore_browser_auth():
+    """Restore a valid server-side bundle for the current browser connection."""
+    browser_key = _browser_auth_key()
+    if not browser_key:
+        return None
+
+    registry = _browser_auth_registry()
+    now = time.time()
+    with registry["lock"]:
+        _purge_expired_browser_auth(registry["sessions"], now)
+        bundle = registry["sessions"].get(browser_key)
+        return dict(bundle) if bundle else None
+
+
+def _forget_browser_auth():
+    """Delete the current browser's server-side bundle on logout or reset."""
+    browser_key = _browser_auth_key()
+    if not browser_key:
+        return
+
+    registry = _browser_auth_registry()
+    with registry["lock"]:
+        registry["sessions"].pop(browser_key, None)
 
 
 def _streamlit_secret_value(*keys):
@@ -322,6 +473,7 @@ def get_all_tokens(prompt_behavior="select_account"):
             "clientapp_sp": None,
             "clientapp_spa": None,
         }
+        _persist_browser_auth(data)
         return data
     except Exception as e:
         st.error(f"Login failed: {e}")
@@ -337,6 +489,7 @@ def _store_fabric_token_response(response, error=None):
     elif error:
         bundle["fabric_error"] = str(error)
     st.session_state.auth_bundle = bundle
+    _persist_browser_auth(bundle)
 
 
 def _fabric_headers_from_session():
@@ -502,6 +655,9 @@ def clear_streamlit_session_state(keep_auth=False):
     not removed on logout, a new Master User login can still display stale
     workspace/report/dataset results from the previous token.
     """
+    if not keep_auth:
+        _forget_browser_auth()
+
     preserved = {"auth_bundle"} if keep_auth else set()
     for key in list(st.session_state.keys()):
         if key not in preserved:
@@ -8070,6 +8226,40 @@ def render_source_db_lineage_records(records, empty_message, download_key=None):
     return display_df.to_dict("records")
 
 
+def render_source_db_lineage_view(contexts, headersSPA, xmla_token, cache_prefix, download_key):
+    """Render source database lineage for report contexts from any workflow."""
+    if not contexts:
+        st.info("Select at least one report first.")
+        return []
+
+    rows = []
+    for context in contexts:
+        source_rows = _get_source_lineage_for_context(
+            context,
+            headersSPA,
+            xmla_token,
+            cache_prefix,
+            auth_headers=[("MasterUser", headersSPA)],
+        )
+        for source_row in source_rows:
+            if isinstance(source_row, dict):
+                rows.append({
+                    "Scope Type": context.get("Scope Type"),
+                    "Workspace Name": context.get("Workspace"),
+                    "App Name": context.get("App Name"),
+                    "Source Report": context.get("Source Report"),
+                    "Report ID": context.get("Report ID"),
+                    "Dataset ID": context.get("Dataset ID"),
+                    **source_row,
+                })
+
+    return render_source_db_lineage_records(
+        rows,
+        "No source DB lineage returned for the selected report. Check XMLA permissions and semantic-model access.",
+        download_key,
+    )
+
+
 def _get_measure_lineage_rows_for_contexts(contexts, headersSPA, xmla_token, cache_prefix):
     rows = []
     for context in contexts:
@@ -8745,7 +8935,13 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
 
 
 # --- STREAMLIT APP CONFIGURATION ---
-st.set_page_config(page_title="PBI Lineage Explorer", layout="wide")
+st.set_page_config(
+    page_title="PBI Lineage Explorer",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+_ensure_browser_auth_cookie()
 
 st.markdown(
     """
@@ -8756,6 +8952,34 @@ st.markdown(
         }
         header[data-testid="stHeader"] {
             display: none;
+        }
+        header[data-testid="stHeader"]:has(button[data-testid="stExpandSidebarButton"]) {
+            display: flex;
+            height: 0;
+            background: transparent;
+            pointer-events: none;
+        }
+        button[data-testid="stExpandSidebarButton"] {
+            position: fixed;
+            top: 0.85rem;
+            left: 0.85rem;
+            z-index: 1001;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            height: 42px;
+            border: 1px solid #dbe3ef;
+            border-radius: 6px;
+            background: #ffffff;
+            color: #1e3a5f;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
+            pointer-events: auto;
+        }
+        button[data-testid="stExpandSidebarButton"]:hover {
+            border-color: #b8cbed;
+            background: #eef4fc;
+            color: #12346b;
         }
         div[data-testid="stHorizontalBlock"]:has(.app-top-strip) {
             position: sticky;
@@ -8856,16 +9080,151 @@ st.markdown(
             font-weight: 700;
             font-size: 0.76rem;
         }
-        section[data-testid="stSidebar"],
-        button[data-testid="stSidebarCollapsedControl"] {
-            display: none;
+        section[data-testid="stSidebar"] {
+            display: block;
+            width: 252px !important;
+            min-width: 252px !important;
+            background: #f8fafc;
+            border-right: 1px solid #dbe3ef;
+            box-shadow: 8px 0 24px rgba(30, 64, 175, 0.04);
+        }
+        section[data-testid="stSidebar"] > div {
+            width: 252px !important;
+            background: #f8fafc;
+        }
+        section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+            padding: 1rem 0.8rem 1.25rem 0.8rem;
+        }
+        [data-testid="stSidebarCollapseButton"] {
+            display: inline-flex;
+        }
+        [data-testid="stSidebarCollapseButton"] button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #dbe3ef;
+            border-radius: 6px;
+            background: #ffffff;
+            color: #1e3a5f;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+        }
+        [data-testid="stSidebarCollapseButton"] button {
+            margin-top: 0.15rem;
+        }
+        .lineage-sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            min-height: 62px;
+            margin: -0.2rem -0.8rem 1.15rem -0.8rem;
+            padding: 0.35rem 1rem 0.95rem 1rem;
+            border-bottom: 1px solid #dbe3ef;
+        }
+        .lineage-sidebar-mark {
+            width: 42px;
+            height: 42px;
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+            border-radius: 6px;
+            background: #2563eb;
+            color: #ffffff;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0;
+            box-shadow: inset -6px -6px 0 #1d4ed8;
+        }
+        .lineage-sidebar-copy {
+            min-width: 0;
+            line-height: 1.05;
+        }
+        .lineage-sidebar-title {
+            color: #0f172a;
+            font-size: 1.16rem;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+        .lineage-sidebar-caption {
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-top: 0.22rem;
+            letter-spacing: 0;
+        }
+        .lineage-nav-label {
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 750;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            padding: 0 0.7rem 0.45rem 0.7rem;
+        }
+        section[data-testid="stSidebar"] div.stButton {
+            margin: 0.12rem 0;
+        }
+        section[data-testid="stSidebar"] div.stButton > button {
+            width: 100%;
+            min-height: 44px;
+            justify-content: flex-start;
+            gap: 0.65rem;
+            padding: 0.55rem 0.75rem;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: #52627a;
+            box-shadow: none;
+            font-weight: 650;
+        }
+        section[data-testid="stSidebar"] div.stButton > button:hover {
+            border-color: #dbe7f8;
+            background: #eef4fc;
+            color: #12346b;
+        }
+        section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+            border-color: #d7e4f7;
+            background: #e5edf9;
+            color: #12346b;
+            box-shadow: inset 3px 0 0 #2563eb;
+        }
+        section[data-testid="stSidebar"] div.stButton > button p {
+            font-size: 0.93rem;
+            text-align: left;
+        }
+        .lineage-sidebar-separator {
+            height: 1px;
+            margin: 1.15rem 0.35rem 1rem 0.35rem;
+            background: #dbe3ef;
+        }
+        .lineage-sidebar-status {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            margin: 0 0.2rem 0.65rem 0.2rem;
+            padding: 0.7rem 0.65rem;
+            border: 1px solid #dbe3ef;
+            border-radius: 6px;
+            background: #ffffff;
+        }
+        .lineage-sidebar-status strong,
+        .lineage-sidebar-status small {
+            display: block;
+            letter-spacing: 0;
+        }
+        .lineage-sidebar-status strong {
+            color: #166534;
+            font-size: 0.78rem;
+        }
+        .lineage-sidebar-status small {
+            color: #64748b;
+            font-size: 0.66rem;
+            margin-top: 0.14rem;
         }
         .main .block-container {
             max-width: 1540px;
-            padding-top: 0.45rem;
+            padding-top: 1.25rem;
             padding-bottom: 3rem;
-            padding-left: 1.6rem;
-            padding-right: 1.6rem;
+            padding-left: 2rem;
+            padding-right: 2rem;
         }
         div[data-testid="stTabs"] button[role="tab"] {
             border-radius: 0;
@@ -9286,6 +9645,20 @@ st.markdown(
             margin-bottom: 0.9rem;
         }
         @media (max-width: 900px) {
+            section[data-testid="stSidebar"],
+            section[data-testid="stSidebar"] > div {
+                width: min(82vw, 252px) !important;
+                min-width: min(82vw, 252px) !important;
+            }
+            button[data-testid="stExpandSidebarButton"],
+            [data-testid="stSidebarCollapseButton"] {
+                display: inline-flex;
+            }
+            .main .block-container {
+                padding-top: 1rem;
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
             .login-steps,
             .auth-step-table,
             .workflow-grid,
@@ -9337,6 +9710,10 @@ st.markdown(
 
 if 'auth_bundle' not in st.session_state:
     st.session_state.auth_bundle = None
+if not st.session_state.auth_bundle:
+    restored_auth_bundle = _restore_browser_auth()
+    if restored_auth_bundle:
+        st.session_state.auth_bundle = restored_auth_bundle
 if 'workflow_mode' not in st.session_state:
     st.session_state.workflow_mode = "landing"
 
@@ -9372,6 +9749,8 @@ if workflow_mode == "direct_measure":
         headersMU,
         get_workspace_inventory=get_workspace_inventory,
         get_artifacts=get_artifacts,
+        render_source_db_lineage_view=render_source_db_lineage_view,
+        render_semantic_model_objects_view=render_semantic_model_objects_view,
         render_measure_source_lineage_view=render_measure_source_lineage_view,
         render_report_layout_view=render_upload_only_report_layout_view,
         render_visual_source_lookup_view=render_visual_source_lookup_view,
