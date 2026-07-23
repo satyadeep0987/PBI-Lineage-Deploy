@@ -5466,6 +5466,9 @@ def _enrich_with_source_details(base_row, semantic_table, semantic_column, sourc
     rebuilt when the XMLA source row does not contain it or old session cache values
     are still present.
     """
+    base_row = base_row if isinstance(base_row, dict) else {}
+    source_lookup = source_lookup if isinstance(source_lookup, dict) else {}
+
     source_row = (
         source_lookup.get(_normalise_name_for_join(semantic_table))
         or source_lookup.get(_normalise_name_for_join(base_row.get("Semantic Table/View")))
@@ -6618,7 +6621,10 @@ def _validated_column_lineage_procedure_name(settings):
     return ".".join(identifier_parts)
 
 
-def _fetch_snowflake_column_lineage(
+_SNOWFLAKE_LINEAGE_BATCH_DEPTH = 5
+
+
+def _fetch_snowflake_column_lineage_batch(
     conn,
     object_name,
     column_name,
@@ -6626,7 +6632,7 @@ def _fetch_snowflake_column_lineage(
     depth,
     procedure_name,
 ):
-    """Call TRACE_COLUMN_LINEAGE and normalize its table result for the UI."""
+    """Call TRACE_COLUMN_LINEAGE once and normalize its table result."""
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -6653,6 +6659,106 @@ def _fetch_snowflake_column_lineage(
         return normalized_rows
     finally:
         cursor.close()
+
+
+def _fetch_snowflake_column_lineage(
+    conn,
+    object_name,
+    column_name,
+    direction,
+    depth,
+    procedure_name,
+):
+    """Fetch column lineage recursively across Snowflake's five-hop call limit."""
+    root_object = str(object_name or "").strip()
+    root_column = str(column_name or "").strip()
+    max_depth = max(1, int(depth or 1))
+    results = []
+    seen_rows = set()
+    visited_frontiers = set()
+    frontier = [(root_object, root_column, 0)]
+
+    while frontier:
+        next_frontier = []
+        for current_object, current_column, base_level in frontier:
+            frontier_key = (
+                str(current_object or "").strip().upper(),
+                str(current_column or "").strip().upper(),
+            )
+            if not all(frontier_key) or frontier_key in visited_frontiers:
+                continue
+            visited_frontiers.add(frontier_key)
+
+            remaining_depth = max_depth - base_level
+            if remaining_depth <= 0:
+                continue
+            batch_depth = min(_SNOWFLAKE_LINEAGE_BATCH_DEPTH, remaining_depth)
+            batch_rows = _fetch_snowflake_column_lineage_batch(
+                conn,
+                current_object,
+                current_column,
+                direction,
+                batch_depth,
+                procedure_name,
+            )
+
+            continuation_nodes = set()
+            for row in batch_rows:
+                try:
+                    local_level = int(row.get("Lineage_Level") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if local_level < 0 or local_level > batch_depth:
+                    continue
+                if base_level > 0 and local_level == 0:
+                    continue
+
+                adjusted_row = dict(row)
+                adjusted_row["Starting_Source_Fully_Qualified_Name"] = root_object
+                adjusted_row["Starting_Source_Type"] = "COLUMN"
+                adjusted_row["Selected_Source_Column"] = root_column
+                adjusted_row["Lineage_Level"] = base_level + local_level
+
+                row_key = (
+                    str(adjusted_row.get("Parent_Object_Name") or "").upper(),
+                    str(adjusted_row.get("Source_Fully_Qualified_Name") or "").upper(),
+                    str(adjusted_row.get("Source_Column_Name") or "").upper(),
+                    adjusted_row["Lineage_Level"],
+                    str(adjusted_row.get("Direction") or "").upper(),
+                )
+                if row_key not in seen_rows:
+                    seen_rows.add(row_key)
+                    results.append(adjusted_row)
+
+                if local_level == batch_depth:
+                    source_object = str(
+                        adjusted_row.get("Source_Fully_Qualified_Name") or ""
+                    ).strip()
+                    source_column = str(
+                        adjusted_row.get("Source_Column_Name") or ""
+                    ).strip()
+                    if source_object and source_column:
+                        continuation_nodes.add((source_object, source_column))
+
+            next_level = base_level + batch_depth
+            if next_level < max_depth:
+                for source_object, source_column in sorted(continuation_nodes):
+                    next_frontier.append(
+                        (source_object, source_column, next_level)
+                    )
+
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return sorted(
+        results,
+        key=lambda row: (
+            int(row.get("Lineage_Level") or 0),
+            str(row.get("Source_Fully_Qualified_Name") or ""),
+            str(row.get("Source_Column_Name") or ""),
+        ),
+    )
 
 
 def get_snowflake_column_lineage(start_object_name, start_column_name, settings):
@@ -9730,10 +9836,11 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
                 break
             for name_candidate in name_candidates:
                 for type_candidate in type_candidates:
-                    semantic_row = semantic_lookup.get(
+                    candidate_row = semantic_lookup.get(
                         _semantic_lookup_keys(dataset_id, table_candidate, name_candidate, type_candidate)
                     )
-                    if semantic_row:
+                    if isinstance(candidate_row, dict) and candidate_row:
+                        semantic_row = candidate_row
                         matched_table = _prefer_non_na(semantic_row.get("Semantic Table/View"), table_candidate)
                         matched_object = _prefer_non_na(semantic_row.get("Semantic Object Name"), name_candidate)
                         matched_type = _semantic_dependency_type(semantic_row.get("Object Type"))
@@ -9745,11 +9852,12 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
         if not semantic_row:
             for name_candidate in name_candidates:
                 for type_candidate in type_candidates:
-                    semantic_row = (
+                    candidate_row = (
                         semantic_lookup_by_name.get((dataset_id, _normalise_name_for_join(name_candidate), type_candidate))
                         or semantic_lookup_by_name.get((dataset_id, _normalise_name_for_join(name_candidate), "ANY"))
                     )
-                    if semantic_row:
+                    if isinstance(candidate_row, dict) and candidate_row:
+                        semantic_row = candidate_row
                         matched_table = _prefer_non_na(semantic_row.get("Semantic Table/View"), semantic_table)
                         matched_object = _prefer_non_na(semantic_row.get("Semantic Object Name"), name_candidate)
                         matched_type = _semantic_dependency_type(semantic_row.get("Object Type"))
