@@ -1,0 +1,40 @@
+// Add each expression as a New column on the Sales Story table.
+
+Order Month =
+DATE (
+    YEAR ( 'Sales Story'[ORDER_DATE] ),
+    MONTH ( 'Sales Story'[ORDER_DATE] ),
+    1
+)
+
+Month Sort =
+YEAR ( 'Sales Story'[ORDER_DATE] ) * 100
+    + MONTH ( 'Sales Story'[ORDER_DATE] )
+
+Margin Band =
+SWITCH (
+    TRUE (),
+    'Sales Story'[MARGIN_PCT] >= 0.40, "High margin",
+    'Sales Story'[MARGIN_PCT] >= 0.25, "Healthy margin",
+    'Sales Story'[MARGIN_PCT] >= 0, "Low margin",
+    "Negative margin"
+)
+
+Line Target Status =
+IF (
+    'Sales Story'[NET_SALES] >= 'Sales Story'[REVENUE_TARGET_ALLOCATED],
+    "Above allocated target",
+    "Below allocated target"
+)
+
+Customer and Region =
+'Sales Story'[CUSTOMER_NAME] & " | " & 'Sales Story'[REGION]
+
+Order Value Band =
+SWITCH (
+    TRUE (),
+    ABS ( 'Sales Story'[ORDER_NET_SALES] ) >= 1000, "Premium",
+    ABS ( 'Sales Story'[ORDER_NET_SALES] ) >= 500, "High",
+    ABS ( 'Sales Story'[ORDER_NET_SALES] ) >= 200, "Medium",
+    "Standard"
+)

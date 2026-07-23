@@ -1,0 +1,17 @@
+product_id,product_name,category,sub_category,unit_cost,list_price
+P001,Pulse Wireless Earbuds,Electronics,Audio,42.00,89.00
+P002,Orbit Smart Watch,Electronics,Wearables,96.00,189.00
+P003,Nova Portable Monitor,Electronics,Displays,118.00,239.00
+P004,Arc Mechanical Keyboard,Electronics,Accessories,48.00,109.00
+P005,Focus Ergonomic Chair,Home Office,Furniture,142.00,329.00
+P006,Rise Standing Desk,Home Office,Furniture,188.00,449.00
+P007,Beam Desk Lamp,Home Office,Lighting,24.00,69.00
+P008,Slate Desk Organizer,Home Office,Accessories,12.00,39.00
+P009,Trail Rain Jacket,Outdoor,Apparel,38.00,99.00
+P010,Summit Day Pack,Outdoor,Bags,31.00,84.00
+P011,Terra Insulated Bottle,Outdoor,Hydration,9.00,29.00
+P012,Camp LED Lantern,Outdoor,Lighting,17.00,49.00
+P013,Motion Training Shoes,Apparel,Footwear,34.00,89.00
+P014,Core Performance Tee,Apparel,Clothing,11.00,34.00
+P015,Flex Travel Pants,Apparel,Clothing,22.00,64.00
+P016,Cloud Everyday Hoodie,Apparel,Clothing,26.00,74.00

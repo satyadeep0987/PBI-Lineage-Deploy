@@ -1,0 +1,18 @@
+{
+  "snowflake_lineage": {
+    "enabled": true,
+    "account": "YOUR_SNOWFLAKE_ACCOUNT_IDENTIFIER",
+    "user": "YOUR_DEMO_USER",
+    "password": "SET_ONLY_IN_YOUR_LOCAL_OR_HOSTED_SECRET_STORE",
+    "authenticator": "snowflake",
+    "role": "PBI_LINEAGE_DEMO_ROLE",
+    "warehouse": "PBI_LINEAGE_DEMO_WH",
+    "database": "PBI_LINEAGE_DEMO",
+    "schema": "MART",
+    "direction": "UPSTREAM",
+    "default_object_domain": "TABLE",
+    "column_lineage_procedure": "COMMON_DB.COMMON_SCHEMA.TRACE_COLUMN_LINEAGE",
+    "max_depth": 20,
+    "statement_timeout_seconds": 120
+  }
+}

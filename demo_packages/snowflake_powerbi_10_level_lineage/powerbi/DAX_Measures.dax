@@ -1,0 +1,71 @@
+// Create a display folder named "Demo Measures" for these measures.
+// Model table name: Sales Story
+
+Total Revenue =
+SUM ( 'Sales Story'[NET_SALES] )
+
+Gross Sales =
+SUM ( 'Sales Story'[GROSS_SALES] )
+
+Gross Profit =
+SUM ( 'Sales Story'[GROSS_PROFIT] )
+
+Gross Margin % =
+DIVIDE ( [Gross Profit], [Total Revenue] )
+
+Orders =
+DISTINCTCOUNT ( 'Sales Story'[ORDER_ID] )
+
+Customers =
+DISTINCTCOUNT ( 'Sales Story'[CUSTOMER_ID] )
+
+Average Order Value =
+DIVIDE ( [Total Revenue], [Orders] )
+
+Revenue Target =
+SUM ( 'Sales Story'[REVENUE_TARGET_ALLOCATED] )
+
+Revenue Variance =
+[Total Revenue] - [Revenue Target]
+
+Target Attainment % =
+DIVIDE ( [Total Revenue], [Revenue Target] )
+
+Returned Orders =
+CALCULATE (
+    DISTINCTCOUNT ( 'Sales Story'[ORDER_ID] ),
+    'Sales Story'[IS_RETURNED] = 1
+)
+
+Return Rate % =
+DIVIDE ( [Returned Orders], [Orders] )
+
+Returned Revenue =
+CALCULATE (
+    [Total Revenue],
+    'Sales Story'[IS_RETURNED] = 1
+)
+
+High Value Revenue =
+CALCULATE (
+    [Total Revenue],
+    'Sales Story'[IS_HIGH_VALUE_ORDER] = 1
+)
+
+Returning Customer Revenue =
+CALCULATE (
+    [Total Revenue],
+    'Sales Story'[CUSTOMER_TYPE] = "RETURNING"
+)
+
+Target Status =
+IF ( [Target Attainment %] >= 1, "Above target", "Below target" )
+
+KPI Status Color =
+SWITCH (
+    TRUE (),
+    [Target Attainment %] >= 1.05, "#059669",
+    [Target Attainment %] >= 1.00, "#2563EB",
+    [Target Attainment %] >= 0.95, "#D97706",
+    "#DC2626"
+)

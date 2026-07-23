@@ -1,0 +1,25 @@
+dimension,member,total_revenue,gross_profit,gross_margin_pct
+Region,East,131874.39,72287.39,0.5482
+Region,North,101127.11,54869.11,0.5426
+Region,West,86831.81,47279.81,0.5445
+Region,South,74085.94,41362.94,0.5583
+Category,Home Office,160237.74,89879.74,0.5609
+Category,Electronics,135470.50,65460.50,0.4832
+Category,Apparel,49893.22,30920.22,0.6197
+Category,Outdoor,48317.79,29538.79,0.6113
+Product,Rise Standing Desk,68729.30,37897.30,0.5514
+Product,Focus Ergonomic Chair,67178.57,36364.57,0.5413
+Product,Nova Portable Monitor,56351.46,26733.46,0.4744
+Product,Orbit Smart Watch,38007.74,17463.74,0.4595
+Product,Arc Mechanical Keyboard,25491.50,13539.50,0.5311
+Product,Trail Rain Jacket,19478.24,11536.24,0.5923
+Product,Cloud Everyday Hoodie,17196.95,10748.95,0.6250
+Product,Beam Desk Lamp,16449.95,10329.95,0.6280
+Product,Motion Training Shoes,16209.55,9613.55,0.5931
+Product,Pulse Wireless Earbuds,15619.80,7723.80,0.4945
+Product,Summit Day Pack,14331.62,8658.62,0.6042
+Product,Flex Travel Pants,10937.66,6911.66,0.6319
+Product,Camp LED Lantern,9174.61,5774.61,0.6294
+Product,Slate Desk Organizer,7879.92,5287.92,0.6711
+Product,Core Performance Tee,5549.06,3646.06,0.6571
+Product,Terra Insulated Bottle,5333.32,3569.32,0.6692

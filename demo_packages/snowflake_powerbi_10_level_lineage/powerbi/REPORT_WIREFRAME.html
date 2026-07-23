@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Power BI Demo Report Wireframe</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #dfe7f2;
+      color: #17233c;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    .page {
+      width: 1280px;
+      height: 720px;
+      margin: 24px auto;
+      background: #f5f7fb;
+      border: 1px solid #cbd5e1;
+      overflow: hidden;
+    }
+    header {
+      height: 88px;
+      padding: 18px 28px;
+      color: #fff;
+      background: #17233c;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: 0; }
+    header p { margin: 7px 0 0; color: #cbd5e1; font-size: 13px; }
+    .filters { display: flex; gap: 8px; }
+    .filter {
+      width: 128px;
+      padding: 10px 12px;
+      color: #17233c;
+      background: #fff;
+      border: 1px solid #d4dbe7;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    main { padding: 18px 24px; }
+    .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+    .kpi, .visual {
+      background: #fff;
+      border: 1px solid #d4dbe7;
+      border-radius: 6px;
+    }
+    .kpi { min-height: 82px; padding: 12px 15px; border-top: 3px solid #2563eb; }
+    .kpi span { display: block; color: #64748b; font-size: 11px; text-transform: uppercase; }
+    .kpi strong { display: block; margin-top: 6px; font-size: 25px; }
+    .story-grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .visual { height: 222px; padding: 14px; }
+    .visual h2 { margin: 0 0 12px; font-size: 14px; }
+    .chart {
+      height: 165px;
+      position: relative;
+      border-left: 1px solid #94a3b8;
+      border-bottom: 1px solid #94a3b8;
+      display: flex;
+      align-items: end;
+      gap: 16px;
+      padding: 10px 14px 0;
+    }
+    .month {
+      height: 100%;
+      flex: 1;
+      min-width: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      text-align: center;
+      color: #64748b;
+      font-size: 9px;
+      z-index: 2;
+    }
+    .bar { width: 100%; flex: none; background: #2563eb; border-radius: 2px 2px 0 0; }
+    .target-line {
+      position: absolute;
+      left: 12px;
+      right: 8px;
+      top: 68px;
+      border-top: 2px dashed #f97316;
+      z-index: 3;
+    }
+    .target-line span {
+      position: absolute;
+      right: 0;
+      top: -17px;
+      color: #c2410c;
+      font-size: 9px;
+    }
+    .region-row {
+      display: grid;
+      grid-template-columns: 44px 1fr 58px;
+      gap: 8px;
+      align-items: center;
+      margin: 15px 0;
+      font-size: 11px;
+    }
+    .region-bar { height: 15px; background: #059669; }
+    .driver-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1.4fr .8fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .driver-grid .visual { height: 218px; }
+    .stack { display: flex; height: 20px; margin: 9px 0 11px; }
+    .stack div:nth-child(1) { background: #2563eb; }
+    .stack div:nth-child(2) { background: #059669; }
+    .stack div:nth-child(3) { background: #f97316; }
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    th, td { padding: 8px 5px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { color: #64748b; }
+    .leakage {
+      width: 112px;
+      height: 112px;
+      margin: 18px auto 8px;
+      border: 26px solid #2563eb;
+      border-right-color: #dc2626;
+      border-radius: 50%;
+    }
+    .legend { text-align: center; color: #64748b; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <section class="page">
+    <header>
+      <div>
+        <h1>From Orders to Customer Value</h1>
+        <p>How customer, product, and channel decisions moved revenue from below target to a strong finish</p>
+      </div>
+      <div class="filters">
+        <div class="filter">Order Month</div>
+        <div class="filter">Region</div>
+        <div class="filter">Segment</div>
+        <div class="filter">Channel</div>
+      </div>
+    </header>
+    <main>
+      <div class="kpis">
+        <div class="kpi"><span>Revenue</span><strong>$393.9K</strong></div>
+        <div class="kpi"><span>Gross Profit</span><strong>$215.8K</strong></div>
+        <div class="kpi"><span>Gross Margin</span><strong>54.8%</strong></div>
+        <div class="kpi"><span>Orders</span><strong>939</strong></div>
+        <div class="kpi"><span>Target Attainment</span><strong>99.4%</strong></div>
+      </div>
+      <div class="story-grid">
+        <div class="visual">
+          <h2>Monthly revenue recovery against target</h2>
+          <div class="chart">
+            <div class="target-line"><span>Target</span></div>
+            <div class="month"><div class="bar" style="height:43%"></div>Jan</div>
+            <div class="month"><div class="bar" style="height:47%"></div>Feb</div>
+            <div class="month"><div class="bar" style="height:52%"></div>Mar</div>
+            <div class="month"><div class="bar" style="height:55%"></div>Apr</div>
+            <div class="month"><div class="bar" style="height:58%"></div>May</div>
+            <div class="month"><div class="bar" style="height:61%"></div>Jun</div>
+            <div class="month"><div class="bar" style="height:68%"></div>Jul</div>
+            <div class="month"><div class="bar" style="height:72%"></div>Aug</div>
+            <div class="month"><div class="bar" style="height:78%"></div>Sep</div>
+            <div class="month"><div class="bar" style="height:83%"></div>Oct</div>
+            <div class="month"><div class="bar" style="height:90%"></div>Nov</div>
+            <div class="month"><div class="bar" style="height:96%"></div>Dec</div>
+          </div>
+        </div>
+        <div class="visual">
+          <h2>Revenue by region</h2>
+          <div class="region-row"><span>East</span><div class="region-bar" style="width:100%"></div><strong>$131.9K</strong></div>
+          <div class="region-row"><span>North</span><div class="region-bar" style="width:77%"></div><strong>$101.1K</strong></div>
+          <div class="region-row"><span>West</span><div class="region-bar" style="width:66%"></div><strong>$86.8K</strong></div>
+          <div class="region-row"><span>South</span><div class="region-bar" style="width:56%"></div><strong>$74.1K</strong></div>
+        </div>
+      </div>
+      <div class="driver-grid">
+        <div class="visual">
+          <h2>Category and segment drivers</h2>
+          <span style="font-size:10px">Home Office</span>
+          <div class="stack"><div style="width:43%"></div><div style="width:34%"></div><div style="width:23%"></div></div>
+          <span style="font-size:10px">Electronics</span>
+          <div class="stack"><div style="width:37%"></div><div style="width:31%"></div><div style="width:22%"></div></div>
+          <span style="font-size:10px">Outdoor and Apparel</span>
+          <div class="stack"><div style="width:29%"></div><div style="width:26%"></div><div style="width:18%"></div></div>
+        </div>
+        <div class="visual">
+          <h2>Product contribution and margin</h2>
+          <table>
+            <tr><th>Product</th><th>Revenue</th><th>Profit</th><th>Margin</th></tr>
+            <tr><td>Rise Standing Desk</td><td>$68.7K</td><td>$37.9K</td><td>55.1%</td></tr>
+            <tr><td>Focus Ergonomic Chair</td><td>$67.2K</td><td>$36.4K</td><td>54.1%</td></tr>
+            <tr><td>Nova Portable Monitor</td><td>$56.4K</td><td>$26.7K</td><td>47.4%</td></tr>
+            <tr><td>Orbit Smart Watch</td><td>$38.0K</td><td>$17.5K</td><td>46.0%</td></tr>
+          </table>
+        </div>
+        <div class="visual">
+          <h2>Revenue leakage</h2>
+          <div class="leakage"></div>
+          <div class="legend">Completed revenue / returned revenue</div>
+        </div>
+      </div>
+    </main>
+  </section>
+</body>
+</html>

@@ -1,0 +1,306 @@
+USE ROLE SYSADMIN;
+USE WAREHOUSE PBI_LINEAGE_DEMO_WH;
+USE DATABASE PBI_LINEAGE_DEMO;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 2: validation view
+-- Primary upstream: RAW.RAW_ORDER_LINES (Level 1)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW STAGE.V_ORDER_VALIDATED
+COMMENT = 'Level 2: casts raw order fields and labels invalid records'
+AS
+SELECT
+    TRIM(ORDER_LINE_ID) AS ORDER_LINE_ID,
+    TRIM(ORDER_ID) AS ORDER_ID,
+    TRY_TO_DATE(ORDER_DATE) AS ORDER_DATE,
+    TRIM(CUSTOMER_ID) AS CUSTOMER_ID,
+    TRIM(PRODUCT_ID) AS PRODUCT_ID,
+    TRY_TO_NUMBER(QUANTITY) AS QUANTITY,
+    TRY_TO_DECIMAL(UNIT_PRICE, 14, 2) AS UNIT_PRICE,
+    TRY_TO_DECIMAL(DISCOUNT_PCT, 8, 4) AS DISCOUNT_PCT,
+    UPPER(TRIM(SALES_CHANNEL)) AS SALES_CHANNEL,
+    UPPER(TRIM(PAYMENT_MODE)) AS PAYMENT_MODE,
+    UPPER(TRIM(ORDER_STATUS)) AS ORDER_STATUS,
+    SOURCE_FILE,
+    INGESTED_AT,
+    CASE
+        WHEN NULLIF(TRIM(ORDER_LINE_ID), '') IS NULL THEN 'INVALID_ORDER_LINE_ID'
+        WHEN NULLIF(TRIM(ORDER_ID), '') IS NULL THEN 'INVALID_ORDER_ID'
+        WHEN TRY_TO_DATE(ORDER_DATE) IS NULL THEN 'INVALID_ORDER_DATE'
+        WHEN NULLIF(TRIM(CUSTOMER_ID), '') IS NULL THEN 'INVALID_CUSTOMER_ID'
+        WHEN NULLIF(TRIM(PRODUCT_ID), '') IS NULL THEN 'INVALID_PRODUCT_ID'
+        WHEN TRY_TO_NUMBER(QUANTITY) <= 0 THEN 'INVALID_QUANTITY'
+        WHEN TRY_TO_DECIMAL(UNIT_PRICE, 14, 2) <= 0 THEN 'INVALID_UNIT_PRICE'
+        WHEN TRY_TO_DECIMAL(DISCOUNT_PCT, 8, 4) NOT BETWEEN 0 AND 1 THEN 'INVALID_DISCOUNT'
+        WHEN UPPER(TRIM(ORDER_STATUS)) NOT IN ('COMPLETED', 'RETURNED', 'CANCELLED') THEN 'INVALID_STATUS'
+        ELSE 'VALID'
+    END AS DATA_QUALITY_STATUS
+FROM RAW.RAW_ORDER_LINES;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 3: validated materialized table
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE STAGE.T_ORDER_VALIDATED
+COMMENT = 'Level 3: materialized valid non-cancelled order lines'
+AS
+SELECT *
+FROM STAGE.V_ORDER_VALIDATED
+WHERE DATA_QUALITY_STATUS = 'VALID'
+  AND ORDER_STATUS <> 'CANCELLED';
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 4: customer and product enrichment view
+-- Supporting branches: RAW_CUSTOMERS and RAW_PRODUCTS
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW CORE.V_ORDER_ENRICHED
+COMMENT = 'Level 4: enriches validated orders with customer and product attributes'
+AS
+WITH CUSTOMERS AS (
+    SELECT
+        TRIM(CUSTOMER_ID) AS CUSTOMER_ID,
+        TRIM(CUSTOMER_NAME) AS CUSTOMER_NAME,
+        UPPER(TRIM(SEGMENT)) AS CUSTOMER_SEGMENT,
+        INITCAP(TRIM(REGION)) AS REGION,
+        TRY_TO_DATE(JOIN_DATE) AS CUSTOMER_JOIN_DATE
+    FROM RAW.RAW_CUSTOMERS
+),
+PRODUCTS AS (
+    SELECT
+        TRIM(PRODUCT_ID) AS PRODUCT_ID,
+        TRIM(PRODUCT_NAME) AS PRODUCT_NAME,
+        TRIM(CATEGORY) AS CATEGORY,
+        TRIM(SUB_CATEGORY) AS SUB_CATEGORY,
+        TRY_TO_DECIMAL(UNIT_COST, 14, 2) AS UNIT_COST,
+        TRY_TO_DECIMAL(LIST_PRICE, 14, 2) AS LIST_PRICE
+    FROM RAW.RAW_PRODUCTS
+)
+SELECT
+    O.ORDER_LINE_ID,
+    O.ORDER_ID,
+    O.ORDER_DATE,
+    O.CUSTOMER_ID,
+    C.CUSTOMER_NAME,
+    C.CUSTOMER_SEGMENT,
+    C.REGION,
+    C.CUSTOMER_JOIN_DATE,
+    O.PRODUCT_ID,
+    P.PRODUCT_NAME,
+    P.CATEGORY,
+    P.SUB_CATEGORY,
+    O.QUANTITY,
+    O.UNIT_PRICE,
+    P.UNIT_COST,
+    P.LIST_PRICE,
+    O.DISCOUNT_PCT,
+    O.SALES_CHANNEL,
+    O.PAYMENT_MODE,
+    O.ORDER_STATUS,
+    O.DATA_QUALITY_STATUS,
+    O.SOURCE_FILE,
+    O.INGESTED_AT
+FROM STAGE.T_ORDER_VALIDATED O
+INNER JOIN CUSTOMERS C
+    ON O.CUSTOMER_ID = C.CUSTOMER_ID
+INNER JOIN PRODUCTS P
+    ON O.PRODUCT_ID = P.PRODUCT_ID;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 5: materialized financial calculations
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE CORE.T_ORDER_FINANCIALS
+COMMENT = 'Level 5: materializes gross sales, discounts, revenue, cost, and profit'
+AS
+WITH UNSIGNED_FINANCIALS AS (
+    SELECT
+        E.*,
+        ROUND(E.QUANTITY * E.UNIT_PRICE, 2) AS GROSS_SALES_UNSIGNED,
+        ROUND(E.QUANTITY * E.UNIT_PRICE * E.DISCOUNT_PCT, 2) AS DISCOUNT_AMOUNT_UNSIGNED,
+        ROUND(E.QUANTITY * E.UNIT_PRICE * (1 - E.DISCOUNT_PCT), 2) AS NET_SALES_UNSIGNED,
+        ROUND(E.QUANTITY * E.UNIT_COST, 2) AS COST_AMOUNT_UNSIGNED
+    FROM CORE.V_ORDER_ENRICHED E
+),
+SIGNED_FINANCIALS AS (
+    SELECT
+        U.* EXCLUDE (
+            GROSS_SALES_UNSIGNED,
+            DISCOUNT_AMOUNT_UNSIGNED,
+            NET_SALES_UNSIGNED,
+            COST_AMOUNT_UNSIGNED
+        ),
+        U.GROSS_SALES_UNSIGNED AS GROSS_SALES,
+        U.DISCOUNT_AMOUNT_UNSIGNED AS DISCOUNT_AMOUNT,
+        IFF(U.ORDER_STATUS = 'RETURNED', -U.NET_SALES_UNSIGNED, U.NET_SALES_UNSIGNED) AS NET_SALES,
+        IFF(U.ORDER_STATUS = 'RETURNED', -U.COST_AMOUNT_UNSIGNED, U.COST_AMOUNT_UNSIGNED) AS COST_AMOUNT
+    FROM UNSIGNED_FINANCIALS U
+)
+SELECT
+    S.*,
+    ROUND(S.NET_SALES - S.COST_AMOUNT, 2) AS GROSS_PROFIT
+FROM SIGNED_FINANCIALS S;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 6: behavioral and temporal view
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW CORE.V_ORDER_BEHAVIOR
+COMMENT = 'Level 6: adds customer lifecycle, period, order value, and margin behavior'
+AS
+WITH BEHAVIOR_BASE AS (
+    SELECT
+        F.*,
+        DATE_TRUNC('MONTH', F.ORDER_DATE)::DATE AS MONTH_START,
+        TO_CHAR(F.ORDER_DATE, 'YYYY-MM') AS MONTH_LABEL,
+        YEAR(F.ORDER_DATE) AS SALES_YEAR,
+        QUARTER(F.ORDER_DATE) AS SALES_QUARTER,
+        DENSE_RANK() OVER (
+            PARTITION BY F.CUSTOMER_ID
+            ORDER BY F.ORDER_DATE, F.ORDER_ID
+        ) AS CUSTOMER_ORDER_SEQUENCE,
+        SUM(F.NET_SALES) OVER (
+            PARTITION BY F.ORDER_ID
+        ) AS ORDER_NET_SALES
+    FROM CORE.T_ORDER_FINANCIALS F
+)
+SELECT
+    B.*,
+    IFF(B.CUSTOMER_ORDER_SEQUENCE = 1, 'NEW', 'RETURNING') AS CUSTOMER_TYPE,
+    IFF(B.ORDER_STATUS = 'RETURNED', 1, 0) AS IS_RETURNED,
+    ROUND(B.GROSS_PROFIT / NULLIF(ABS(B.NET_SALES), 0), 4) AS MARGIN_PCT
+FROM BEHAVIOR_BASE B;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 7: materialized behavior table
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE ANALYTICS.T_ORDER_BEHAVIOR
+COMMENT = 'Level 7: materialized order behavior ready for target analysis'
+AS
+SELECT *
+FROM CORE.V_ORDER_BEHAVIOR;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 8: target allocation and status view
+-- Supporting branch: RAW_MONTHLY_TARGETS
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW ANALYTICS.V_SALES_TARGET_STATUS
+COMMENT = 'Level 8: joins regional monthly targets and allocates target to fact rows'
+AS
+WITH TARGETS AS (
+    SELECT
+        TRY_TO_DATE(MONTH_START) AS MONTH_START,
+        INITCAP(TRIM(REGION)) AS REGION,
+        TRY_TO_DECIMAL(REVENUE_TARGET, 16, 2) AS REVENUE_TARGET,
+        TRY_TO_DECIMAL(MARGIN_TARGET_PCT, 8, 4) AS MARGIN_TARGET_PCT
+    FROM RAW.RAW_MONTHLY_TARGETS
+),
+BEHAVIOR_WITH_COUNTS AS (
+    SELECT
+        B.*,
+        COUNT(*) OVER (
+            PARTITION BY B.MONTH_START, B.REGION
+        ) AS REGION_MONTH_LINE_COUNT
+    FROM ANALYTICS.T_ORDER_BEHAVIOR B
+)
+SELECT
+    B.*,
+    T.REVENUE_TARGET AS REGION_MONTH_REVENUE_TARGET,
+    T.MARGIN_TARGET_PCT,
+    ROUND(
+        T.REVENUE_TARGET / NULLIF(B.REGION_MONTH_LINE_COUNT, 0),
+        6
+    ) AS REVENUE_TARGET_ALLOCATED
+FROM BEHAVIOR_WITH_COUNTS B
+INNER JOIN TARGETS T
+    ON B.MONTH_START = T.MONTH_START
+   AND B.REGION = T.REGION;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 9: curated story mart
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE MART.T_SALES_STORY
+COMMENT = 'Level 9: curated business-story mart with explainable performance signals'
+AS
+SELECT
+    S.*,
+    ROUND(S.NET_SALES - S.REVENUE_TARGET_ALLOCATED, 2) AS TARGET_GAP_ALLOCATED,
+    IFF(ABS(S.ORDER_NET_SALES) >= 750, 1, 0) AS IS_HIGH_VALUE_ORDER,
+    CASE
+        WHEN S.MARGIN_PCT >= 0.40 THEN 'HIGH MARGIN'
+        WHEN S.MARGIN_PCT >= 0.25 THEN 'HEALTHY MARGIN'
+        WHEN S.MARGIN_PCT >= 0 THEN 'LOW MARGIN'
+        ELSE 'NEGATIVE MARGIN'
+    END AS SOURCE_MARGIN_BAND,
+    CASE
+        WHEN ABS(S.ORDER_NET_SALES) >= 1000 THEN 'PREMIUM'
+        WHEN ABS(S.ORDER_NET_SALES) >= 500 THEN 'HIGH'
+        WHEN ABS(S.ORDER_NET_SALES) >= 200 THEN 'MEDIUM'
+        ELSE 'STANDARD'
+    END AS CUSTOMER_VALUE_BAND,
+    CASE
+        WHEN S.IS_RETURNED = 1 THEN 'REVENUE LEAKAGE'
+        WHEN S.NET_SALES >= S.REVENUE_TARGET_ALLOCATED
+             AND S.MARGIN_PCT >= S.MARGIN_TARGET_PCT THEN 'PROFITABLE GROWTH'
+        WHEN S.NET_SALES >= S.REVENUE_TARGET_ALLOCATED THEN 'GROWTH WITH MARGIN PRESSURE'
+        WHEN S.MARGIN_PCT >= S.MARGIN_TARGET_PCT THEN 'HEALTHY MARGIN BELOW TARGET'
+        ELSE 'NEEDS ATTENTION'
+    END AS STORY_SIGNAL
+FROM ANALYTICS.V_SALES_TARGET_STATUS S;
+
+-- ---------------------------------------------------------------------------
+-- LEVEL 10: final Power BI fact table
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE TABLE MART.FACT_PBI_SALES_STORY
+COMMENT = 'Level 10: flattened presentation fact table used by the Power BI demo report'
+AS
+SELECT
+    ORDER_LINE_ID,
+    ORDER_ID,
+    ORDER_DATE,
+    MONTH_START,
+    MONTH_LABEL,
+    SALES_YEAR,
+    SALES_QUARTER,
+    CUSTOMER_ID,
+    CUSTOMER_NAME,
+    CUSTOMER_SEGMENT,
+    CUSTOMER_TYPE,
+    CUSTOMER_JOIN_DATE,
+    REGION,
+    PRODUCT_ID,
+    PRODUCT_NAME,
+    CATEGORY,
+    SUB_CATEGORY,
+    SALES_CHANNEL,
+    PAYMENT_MODE,
+    ORDER_STATUS,
+    QUANTITY,
+    UNIT_PRICE,
+    UNIT_COST,
+    LIST_PRICE,
+    DISCOUNT_PCT,
+    GROSS_SALES,
+    DISCOUNT_AMOUNT,
+    NET_SALES,
+    COST_AMOUNT,
+    GROSS_PROFIT,
+    MARGIN_PCT,
+    ORDER_NET_SALES,
+    REGION_MONTH_REVENUE_TARGET,
+    REVENUE_TARGET_ALLOCATED,
+    MARGIN_TARGET_PCT,
+    TARGET_GAP_ALLOCATED,
+    IS_RETURNED,
+    IS_HIGH_VALUE_ORDER,
+    SOURCE_MARGIN_BAND,
+    CUSTOMER_VALUE_BAND,
+    STORY_SIGNAL,
+    DATA_QUALITY_STATUS,
+    SOURCE_FILE,
+    INGESTED_AT,
+    CURRENT_TIMESTAMP() AS MART_REFRESHED_AT
+FROM MART.T_SALES_STORY;
+
+SELECT
+    COUNT(*) AS FINAL_FACT_ROWS,
+    COUNT(DISTINCT ORDER_ID) AS FINAL_ORDERS,
+    MIN(ORDER_DATE) AS FIRST_ORDER_DATE,
+    MAX(ORDER_DATE) AS LAST_ORDER_DATE
+FROM MART.FACT_PBI_SALES_STORY;

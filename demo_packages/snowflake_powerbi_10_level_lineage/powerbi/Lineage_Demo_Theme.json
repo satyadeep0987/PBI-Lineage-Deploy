@@ -1,0 +1,16 @@
+{
+  "name": "Northstar Lineage Demo",
+  "dataColors": [
+    "#2563EB",
+    "#059669",
+    "#F97316",
+    "#7C3AED",
+    "#0891B2",
+    "#D97706",
+    "#DC2626",
+    "#64748B"
+  ],
+  "background": "#F5F7FB",
+  "foreground": "#17233C",
+  "tableAccent": "#2563EB"
+}
