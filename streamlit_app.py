@@ -37,6 +37,10 @@ from pbi_modules.app_shell import (
     render_table_impact_page,
     render_workflow_choice_page,
 )
+from pbi_modules.analysis_document import (
+    build_claude_analysis_markdown,
+    claude_analysis_markdown_filename,
+)
 from pbi_modules.claude_agent import (
     ClaudeAgentError,
     ClaudeConfigurationError,
@@ -10247,6 +10251,23 @@ def _render_claude_agent_trace(trace, usage=None, orchestration=None):
         )
 
 
+def _render_claude_markdown_download(message, key):
+    document = str(message.get("markdown_document") or "")
+    if not document:
+        return
+    st.download_button(
+        "Download analysis (.md)",
+        data=document,
+        file_name=str(
+            message.get("markdown_filename")
+            or claude_analysis_markdown_filename(message.get("question") or "analysis")
+        ),
+        mime="text/markdown",
+        key=f"claude_markdown_download_{key}",
+        icon=":material/download:",
+    )
+
+
 def _claude_agent_prompt_suggestions(records, selected_workspaces):
     """Return prompt starters based only on the visible workspace/report inventory."""
     scoped_records = _agent_scoped_records(records, selected_workspaces)
@@ -10544,7 +10565,7 @@ def render_claude_lineage_agent_page(
 
     messages_key = "claude_agent_messages_v1"
     messages = list(st.session_state.get(messages_key) or [])
-    for message in messages:
+    for message_index, message in enumerate(messages):
         role = str(message.get("role") or "assistant")
         with st.chat_message(role):
             st.markdown(str(message.get("content") or ""))
@@ -10554,6 +10575,7 @@ def render_claude_lineage_agent_page(
                     message.get("usage") or {},
                     message.get("orchestration") or {},
                 )
+                _render_claude_markdown_download(message, message_index)
 
     prompt = (
         str(submitted_prompt or "").strip()
@@ -10668,13 +10690,46 @@ def render_claude_lineage_agent_page(
                 "trace": result.get("trace") or [],
                 "usage": result.get("usage") or {},
                 "orchestration": result.get("orchestration") or {},
+                "evidence_packets": result.get("evidence_packets") or [],
+                "question": user_message["content"],
+                "document_context": {
+                    "workspace_names": selected_workspaces,
+                    "model": result.get("model") or resolved_settings["model"],
+                    "runtime": str(resolved_settings["agent_runtime"]).title(),
+                    "strategy": selected_strategy.title(),
+                },
+                "created_at": time.time(),
             }
+            document_progress = st.progress(
+                0,
+                text="Preparing downloadable Markdown documentation...",
+            )
+            try:
+                document_progress.progress(35, text="Structuring Claude findings and evidence...")
+                assistant_message["markdown_document"] = build_claude_analysis_markdown(
+                    question=assistant_message["question"],
+                    answer=assistant_message["content"],
+                    context=assistant_message["document_context"],
+                    trace=assistant_message["trace"],
+                    usage=assistant_message["usage"],
+                    orchestration=assistant_message["orchestration"],
+                    evidence_packets=assistant_message["evidence_packets"],
+                    created_at=assistant_message["created_at"],
+                )
+                assistant_message["markdown_filename"] = claude_analysis_markdown_filename(
+                    assistant_message["question"],
+                    assistant_message["created_at"],
+                )
+                document_progress.progress(100, text="Markdown documentation is ready.")
+            finally:
+                document_progress.empty()
             st.markdown(assistant_message["content"])
             _render_claude_agent_trace(
                 assistant_message["trace"],
                 assistant_message["usage"],
                 assistant_message["orchestration"],
             )
+            _render_claude_markdown_download(assistant_message, "current")
         except (ClaudeAgentError, ClaudeConfigurationError) as exc:
             spinner_placeholder.empty()
             assistant_message = {

@@ -250,6 +250,9 @@ requests additionally display:
   reviewer/coordinator activity, timings, and errors.
 - `Gaps`: missing visual metadata, disabled Snowflake lineage, skipped work, or
   unavailable Power BI evidence.
+- `Download analysis (.md)`: locally prepared Markdown containing the completed
+  answer, analysis context, Mermaid flow, tool activity, and retained evidence
+  packets. Preparing it makes no additional Claude request.
 
 ## Security And Guardrails
 
