@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from pbi_modules.claude_agent import (
     lineage_agent_tool_definitions,
     plan_claude_agent_route,
+    question_requests_visual_details,
     resolve_claude_settings,
     run_claude_orchestrated_agent,
 )
@@ -102,6 +103,23 @@ class ClaudeMultiAgentRouteTests(unittest.TestCase):
             ],
         )
 
+    def test_visual_specialist_requires_an_explicit_visual_request(self):
+        self.assertFalse(
+            question_requests_visual_details(
+                "Explain the lineage for the Northstar report and its source tables."
+            )
+        )
+        self.assertTrue(
+            question_requests_visual_details(
+                "Which report visuals use the Total Sales measure?"
+            )
+        )
+        route = plan_claude_agent_route(
+            "Trace NET_SALES from Snowflake through the semantic model to downstream impact.",
+            _settings(max_specialist_agents=4),
+        )
+        self.assertNotIn("visual_evidence", route["specialists"])
+
     def test_haiku_cost_defaults_are_selected_from_model_name(self):
         settings = resolve_claude_settings(_settings())
 
@@ -122,6 +140,7 @@ class ClaudeMultiAgentExecutionTests(unittest.TestCase):
             ]
         )
         tool_calls = []
+        progress_events = []
 
         def execute(name, arguments):
             tool_calls.append((name, arguments))
@@ -139,6 +158,7 @@ class ClaudeMultiAgentExecutionTests(unittest.TestCase):
                 "specialists": ["powerbi_semantic", "snowflake_lineage"],
             },
             client=client,
+            progress_callback=lambda stage, status: progress_events.append((stage, status)),
         )
 
         self.assertEqual(result["text"], "NET_SALES is mapped end to end.")
@@ -150,6 +170,19 @@ class ClaudeMultiAgentExecutionTests(unittest.TestCase):
         self.assertTrue(result["orchestration"]["evidence_reviewer_used"])
         self.assertEqual(result["orchestration"]["budget"]["agent_runs"], 4)
         self.assertEqual(result["usage"], {"input_tokens": 60, "output_tokens": 30})
+        self.assertEqual(
+            progress_events,
+            [
+                ("powerbi_semantic", "running"),
+                ("powerbi_semantic", "completed"),
+                ("snowflake_lineage", "running"),
+                ("snowflake_lineage", "completed"),
+                ("evidence_reviewer", "running"),
+                ("evidence_reviewer", "completed"),
+                ("coordinator", "running"),
+                ("coordinator", "completed"),
+            ],
+        )
 
     def test_agent_run_cap_reserves_a_final_coordinator(self):
         client = _FakeClient(

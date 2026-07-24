@@ -11,6 +11,20 @@ The application does not send Power BI, Fabric, XMLA, Snowflake, or browser
 credentials to Claude. Claude receives only bounded metadata returned by the
 application's existing read-only tools.
 
+## Visual Evidence Gate
+
+Visual-level metadata is deliberately excluded by default. A prompt about a
+report, measure, table, model, source, or impact receives only non-visual
+lineage evidence. The application enables visual evidence only when the user
+explicitly asks for visuals, visual usage, charts, cards, slicers, or visual
+details. This gate is enforced at the tool executor, so a model cannot request
+report-page or visual-field data during an ordinary lineage prompt. Non-visual
+turns also send only the current user question to Claude, preventing visual
+details from an earlier chat answer being included in a later request.
+
+Claude prompts request only `Answer`, `Evidence`, and `Impact` sections. The
+application does not request or render a separate `Gaps` section.
+
 ## Where The Agents Are Created
 
 The application supports two runtimes:
@@ -43,7 +57,7 @@ Use this section after creating the agents in Anthropic Console.
 | Visual evidence | `visual_evidence_agent_id` | Report-page and visual-field evidence |
 | Snowflake lineage | `snowflake_lineage_agent_id` | Source objects, columns, and transformations |
 | Impact analysis | `impact_analysis_agent_id` | Measure/table downstream impact |
-| Evidence reviewer | `evidence_reviewer_agent_id` | Conflicts, evidence quality, and gaps across specialist findings |
+| Evidence reviewer | `evidence_reviewer_agent_id` | Conflicts and evidence quality across specialist findings |
 | Coordinator | `coordinator_agent_id` | One final grounded answer from the selected findings |
 
 3. Paste the values in the deployment secret store, never into a tracked file.
@@ -196,12 +210,12 @@ separate from the Claude estimate.
 |---|---|---|---|
 | Router | Avoids paying for unnecessary agents | Detects simple versus cross-domain questions with deterministic keywords | Mode, selected specialists, reason |
 | General lineage agent | Cheapest default for normal questions | Existing complete read-only tool set | One grounded answer plus tool trace |
-| Power BI semantic specialist | Keeps report/model reasoning focused | Reports, semantic objects, measure/source mappings | Findings, exact names/IDs, gaps |
-| Visual evidence specialist | Prevents false visual-usage claims | Report pages, visual fields, visual metadata | Confirmed visual evidence or an explicit gap |
-| Snowflake lineage specialist | Keeps physical-source and transformation analysis focused | Fully qualified sources and Snowflake recursive lineage | Source path, transformations, gaps |
+| Power BI semantic specialist | Keeps report/model reasoning focused | Reports, semantic objects, measure/source mappings | Findings and exact names/IDs |
+| Visual evidence specialist | Prevents false visual-usage claims | Report pages, visual fields, visual metadata | Confirmed visual evidence |
+| Snowflake lineage specialist | Keeps physical-source and transformation analysis focused | Fully qualified sources and Snowflake recursive lineage | Source path and transformations |
 | Impact specialist | Separates downstream impact from source tracing | Measure/table impact and dependent reports/models | Counts, affected objects, visual-confirmation status |
-| Evidence reviewer | Checks agreement before a broad conclusion | Bounded specialist evidence only; no tools | Confirmed evidence, conflicts, gaps |
-| Coordinator | Produces one usable final response | Bounded specialist packets and reviewer output; no tools | Answer, Evidence, Impact, Gaps |
+| Evidence reviewer | Checks agreement before a broad conclusion | Bounded specialist evidence only; no tools | Confirmed evidence and conflicts |
+| Coordinator | Produces one usable final response | Bounded specialist packets and reviewer output; no tools | Answer, Evidence, Impact |
 
 ## Claude Code Map
 
@@ -248,11 +262,8 @@ requests additionally display:
   guard.
 - `Evidence activity`: shared-cache creation, each specialist's requested tool,
   reviewer/coordinator activity, timings, and errors.
-- `Gaps`: missing visual metadata, disabled Snowflake lineage, skipped work, or
-  unavailable Power BI evidence.
-- `Download analysis (.md)`: locally prepared Markdown containing the completed
-  answer, analysis context, Mermaid flow, tool activity, and retained evidence
-  packets. Preparing it makes no additional Claude request.
+- `Download analysis (.md)`: locally prepared Markdown containing only the
+  completed PowerAI answer. Preparing it makes no additional Claude request.
 
 ## Security And Guardrails
 

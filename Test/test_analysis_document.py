@@ -11,7 +11,7 @@ from pbi_modules.analysis_document import (
 
 
 class AnalysisDocumentTests(unittest.TestCase):
-    def test_markdown_contains_response_activity_and_local_note(self):
+    def test_markdown_contains_only_chat_output(self):
         document = build_claude_analysis_markdown(
             question="Trace Northstar Sales",
             answer="## Answer\nThe report uses Sales Story.",
@@ -42,11 +42,14 @@ class AnalysisDocumentTests(unittest.TestCase):
             created_at=0,
         )
 
-        self.assertIn("# Power BI Lineage Analysis", document)
-        self.assertIn("```mermaid", document)
-        self.assertIn("inspect_report_lineage", document)
-        self.assertIn("Sales&Marketing", document)
-        self.assertIn("No additional Claude request", document)
+        self.assertEqual(document, "## Answer\nThe report uses Sales Story.\n")
+        self.assertNotIn("# Power BI Lineage Analysis", document)
+        self.assertNotIn("## Request", document)
+        self.assertNotIn("## Analysis Flow", document)
+        self.assertNotIn("## Analysis Context", document)
+        self.assertNotIn("## Evidence Activity", document)
+        self.assertNotIn("## Returned Evidence", document)
+        self.assertNotIn("inspect_report_lineage", document)
 
     def test_filename_is_safe_and_uses_markdown_extension(self):
         filename = claude_analysis_markdown_filename("Sales / Northstar", created_at=0)

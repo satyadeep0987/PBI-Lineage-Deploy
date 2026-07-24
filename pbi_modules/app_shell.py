@@ -41,7 +41,7 @@ def _render_pending_device_flow(get_all_tokens):
                 result = get_all_tokens(prompt_behavior="none")
                 if result:
                     st.session_state.auth_bundle = result
-                    st.session_state.workflow_mode = "claude_agent"
+                    st.session_state.workflow_mode = "landing"
                     st.rerun()
     with restart_col:
         if st.button("Restart sign-in", use_container_width=True):
@@ -102,14 +102,14 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
     """Render persistent authenticated navigation in the left sidebar."""
     normalized_mode = str(mode_label or "").strip().casefold()
     destination_aliases = {
-        "home": "claude_agent",
+        "home": "landing",
         "guided workflow": "explore",
         "explore": "explore",
         "direct measure lookup": "report_lineage",
         "report lineage": "report_lineage",
         "table impact": "table_impact",
         "measure impact": "measure_impact",
-        "claude agent": "claude_agent",
+        "claude agent": "landing",
     }
     active_destination = destination_aliases.get(normalized_mode, "explore")
 
@@ -132,11 +132,11 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
         if st.button(
             "Home",
             key="top_home",
-            type="primary" if active_destination == "claude_agent" else "tertiary",
+            type="primary" if active_destination == "landing" else "tertiary",
             icon=":material/home:",
             use_container_width=True,
         ):
-            _set_workflow("claude_agent")
+            _set_workflow("landing")
 
         if st.button(
             "Explore",
@@ -247,7 +247,7 @@ def render_login_page(clear_streamlit_session_state, get_all_tokens):
                         result = get_all_tokens(prompt_behavior="select_account")
                         if result:
                             st.session_state.auth_bundle = result
-                            st.session_state.workflow_mode = "claude_agent"
+                            st.session_state.workflow_mode = "landing"
                             st.rerun()
 
 

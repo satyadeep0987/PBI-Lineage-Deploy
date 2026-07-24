@@ -46,7 +46,7 @@ credentials are never sent to Claude.
 | File | Change |
 |---|---|
 | `pbi_modules/claude_agent.py` | Direct Anthropic client and Managed Agent session bridge, deterministic router, tool-limited specialists, evidence reviewer/coordinator, budget guard, token usage, result limits, and error redaction |
-| `pbi_modules/analysis_document.py` | Creates Markdown documentation locally from the completed answer, trace, usage, and returned evidence; no model request is made for document preparation |
+| `pbi_modules/analysis_document.py` | Creates Markdown documentation locally from only the completed answer; no model request is made for document preparation |
 | `pbi_modules/app_shell.py` | Adds `Claude Agent` as the first sidebar destination |
 | `streamlit_app.py` | Adds the agent page, cached estate-wide shared evidence, permission-scoped tool executor, strategy control, routing, and Claude measure definitions |
 | `utils.py` | Replaces OpenAI defaults with the shared `claude` configuration |
@@ -188,8 +188,7 @@ workspace administration tool.
 13. The UI displays the answer, strategy, selected agents, budget estimate,
    tool activity, execution duration, and token usage.
 14. The application prepares a downloadable Markdown record locally. It includes
-    the question, answer, context, Mermaid flow diagram, evidence activity, and
-    retained evidence packets without invoking Claude again.
+    only the completed answer without invoking Claude again.
 
 The estate index is cached in the active Streamlit session. `Refresh index`
 clears only Claude's index and rebuilds it on the next estate-wide request.
@@ -233,9 +232,9 @@ source columns, and bounded source queries.
   available.
 - Conversation state is held in Streamlit session state and cleared by the user
   or application session lifecycle.
-- The downloaded Markdown may include DAX, source queries, object names, and
-  other returned metadata. Treat the exported file according to the same data
-  classification and retention rules as the Power BI/Snowflake evidence.
+- The downloaded Markdown contains the assistant answer only. Treat the exported
+  file according to the same data classification and retention rules as the
+  lineage answer shown in the UI.
 - The initial release is read-only. Future write actions require a separate
   approval workflow.
 

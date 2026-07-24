@@ -13,7 +13,7 @@ from pptx.util import Inches, Pt
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_PATH = ROOT / "presentations" / "PBI_Lineage_Explorer_Why_Outcomes_Architecture.pptx"
+OUTPUT_PATH = ROOT / "presentations" / "PBI_Lineage_Explorer_User_Value_Architecture.pptx"
 PREVIEW_DIR = ROOT / "presentations" / "previews"
 
 SLIDE_W = 13.333
@@ -384,13 +384,13 @@ def add_path_node(
 
 def build_slide_one(prs: Presentation) -> SlideCanvas:
     canvas = SlideCanvas(prs)
-    add_header(canvas, "01  /  WHY THIS APP", "01")
+    add_header(canvas, "01  /  USER VALUE", "01")
     canvas.text(
         0.58,
         1.12,
         12.0,
         0.50,
-        "From scattered metadata to one trusted impact story",
+        "Get lineage answers in minutes, not hours",
         27,
         NAVY,
         True,
@@ -401,20 +401,20 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         1.68,
         11.8,
         0.38,
-        "A clear answer to one human question: if something changes, what else is affected?",
+        "Instead of opening reports one by one, a BI user searches once and sees the connected report, model, measure, visual and source details.",
         13,
         MUTED,
         valign="middle",
     )
 
     canvas.rect(0.58, 2.28, 3.12, 3.92, NAVY, None)
-    canvas.text(0.84, 2.53, 2.60, 0.25, "THE REAL QUESTION", 8.5, "8FB7FF", True)
+    canvas.text(0.84, 2.53, 2.60, 0.25, "THE OLD WAY", 8.5, "8FB7FF", True)
     canvas.text(
         0.84,
         2.91,
         2.52,
         1.58,
-        "\"If this column or measure changes, what reports and decisions are affected?\"",
+        "\"Open every report, inspect every model, and still wonder what changed.\"",
         17,
         PAPER,
         True,
@@ -426,7 +426,7 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         4.72,
         2.50,
         0.38,
-        "Today the clues live in separate places:",
+        "The user has to jump between:",
         9.5,
         "D9E3F1",
     )
@@ -439,13 +439,13 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         canvas.rect(x, y, 1.08, 0.29, "243653", "40506A", 0.6)
         canvas.text(x, y, 1.08, 0.29, label, 7.3, PAPER, True, "center", "middle", 0)
 
-    canvas.text(4.02, 2.32, 4.70, 0.34, "The application connects the trail", 14, NAVY, True)
+    canvas.text(4.02, 2.32, 4.70, 0.34, "The app does the report-by-report work", 14, NAVY, True)
     canvas.text(
         4.02,
         2.69,
         4.65,
         0.42,
-        "Every step remains tied to platform metadata, IDs and source definitions.",
+        "It inventories authorized assets, joins metadata by stable IDs and traces impact across BI and source layers.",
         9.5,
         MUTED,
     )
@@ -469,7 +469,7 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         5.82,
         4.57,
         0.38,
-        "ONE SEARCH  |  ONE CONNECTED EVIDENCE TRAIL",
+        "ONE SEARCH  |  MINUTES TO AN EVIDENCE-BACKED ANSWER",
         8,
         NAVY,
         True,
@@ -484,8 +484,8 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         2.88,
         3.60,
         0.84,
-        "Faster answers",
-        "Move from a business question to the right report, measure and source.",
+        "Minutes, not hours",
+        "Ask once instead of checking every report and semantic model manually.",
         PAPER,
         BLUE,
     )
@@ -494,8 +494,8 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         3.89,
         3.60,
         0.84,
-        "Safer changes",
-        "See downstream impact before changing a column, table or DAX measure.",
+        "Complete impact view",
+        "See affected reports, measures, visuals, tables and Snowflake sources.",
         PAPER,
         GREEN,
     )
@@ -504,8 +504,8 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         4.90,
         3.60,
         0.84,
-        "Evidence people can share",
-        "Export a repeatable explanation for review, audit and handover.",
+        "Clean output",
+        "Download the actual PowerAI response as simple Markdown.",
         PAPER,
         ORANGE,
     )
@@ -528,7 +528,7 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
         6.55,
         11.67,
         0.46,
-        "OUTCOME: ASK ONCE. TRACE END TO END. EXPLAIN WITH CONFIDENCE.",
+        "OUTCOME: FEWER MANUAL CHECKS. FASTER CONFIDENCE. SAFER BI CHANGES.",
         10,
         PAPER,
         True,
@@ -538,12 +538,11 @@ def build_slide_one(prs: Presentation) -> SlideCanvas:
     )
     add_footer(canvas, "01")
     canvas.slide.notes_slide.notes_text_frame.text = (
-        "Open with the human question on the left. Teams are not asking for APIs or DMVs; "
-        "they want to know what will be affected by a change. Explain that the application "
-        "connects the report, visual, measure, semantic model and Snowflake source into one "
-        "evidence trail. Close with the three outcomes: faster answers, safer changes and "
-        "evidence that can be shared. Avoid claiming that AI or the app creates lineage; "
-        "the platform metadata remains the source of truth."
+        "Open with the old manual workflow: report owners spend hours opening reports, "
+        "checking semantic models and tracing source objects. The app compresses that into "
+        "one search and one evidence trail. Emphasize minutes instead of report-by-report "
+        "inspection, then close with the user outcomes: faster confidence, safer changes "
+        "and a clean PowerAI answer that can be shared."
     )
     return canvas
 
@@ -579,13 +578,13 @@ def add_change_chip(
 
 def build_slide_two(prs: Presentation) -> SlideCanvas:
     canvas = SlideCanvas(prs)
-    add_header(canvas, "02  /  ARCHITECTURE CHANGES", "02")
+    add_header(canvas, "02  /  ARCHITECTURE + BI USER FLOW", "02")
     canvas.text(
         0.58,
         1.12,
         12.0,
         0.50,
-        "What changed to make end-to-end lineage possible",
+        "How each layer helps the BI user interact with lineage",
         27,
         NAVY,
         True,
@@ -596,7 +595,7 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
         1.68,
         11.9,
         0.38,
-        "One experience coordinates each platform's strongest metadata path, while isolating the Windows-only work.",
+        "The BI user stays in one Streamlit app while app-owned connectors collect evidence from Power BI, Fabric, XMLA, Snowflake and PowerAI.",
         12.5,
         MUTED,
         valign="middle",
@@ -606,8 +605,8 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
     canvas.rect(0.58, 2.67, 1.32, 1.48, BLUE_LIGHT, "BCD1F5", 0.8)
     canvas.rect(0.98, 2.93, 0.52, 0.52, BLUE, None)
     canvas.text(0.98, 2.93, 0.52, 0.52, "U", 12, PAPER, True, "center", "middle", 0)
-    canvas.text(0.64, 3.56, 1.20, 0.23, "Analyst / owner", 8.1, INK, True, "center")
-    canvas.text(0.70, 3.84, 1.08, 0.20, "Browser access", 7.5, MUTED, False, "center")
+    canvas.text(0.64, 3.56, 1.20, 0.23, "BI user / owner", 8.1, INK, True, "center")
+    canvas.text(0.68, 3.84, 1.12, 0.20, "Search, explore, ask", 7.3, MUTED, False, "center")
     canvas.arrow(2.04, 3.24, 0.30, 0.28, BLUE)
 
     canvas.text(2.50, 2.31, 3.70, 0.23, "PBI LINEAGE EXPLORER", 8, BLUE, True, "center")
@@ -627,10 +626,10 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
         0,
     )
     for y, code, title, subtitle, accent in [
-        (3.26, "01", "Search and navigation", "One place for report, measure and impact workflows", BLUE),
-        (3.88, "02", "Session and permissions", "Delegated identity retained until logout or expiry", GREEN),
-        (4.50, "03", "Metadata join and lineage engine", "IDs, semantic objects, source columns and recursive hops", ORANGE),
-        (5.12, "04", "Evidence and exports", "Visual confirmation, diagrams and downloadable results", TEAL),
+        (3.26, "01", "Search and navigation", "Home, Explore, Report Lineage, Table/Measure Impact", BLUE),
+        (3.88, "02", "Session and permissions", "Signed-in identity scopes every request", GREEN),
+        (4.50, "03", "Lineage engine", "Joins report, visual, DAX, model and source metadata", ORANGE),
+        (5.12, "04", "PowerAI and export", "Explains evidence; Markdown download is answer-only", TEAL),
     ]:
         canvas.rect(2.70, y, 0.38, 0.30, accent, None)
         canvas.text(2.70, y, 0.38, 0.30, code, 7.4, PAPER, True, "center", "middle", 0)
@@ -646,7 +645,7 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
         2.67,
         "API",
         "Power BI REST + Fabric",
-        "Workspaces, reports, pages and visuals",
+        "Workspaces, reports, pages, visuals and definitions",
         BLUE_LIGHT,
         BLUE,
     )
@@ -655,7 +654,7 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
         3.77,
         "X",
         "Windows XMLA path",
-        "Tables, measures, DAX and dependencies",
+        "Tables, columns, measures, DAX and dependencies",
         ORANGE_LIGHT,
         ORANGE,
     )
@@ -670,37 +669,37 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
     )
 
     canvas.arrow(10.13, 3.75, 0.30, 0.28, NAVY)
-    canvas.text(10.55, 2.31, 2.18, 0.23, "ONE EVIDENCE VIEW", 8, NAVY, True, "center")
+    canvas.text(10.55, 2.31, 2.18, 0.23, "BI USER SEES", 8, NAVY, True, "center")
     canvas.rect(10.55, 2.67, 2.18, 2.02, NAVY, None)
-    canvas.text(10.78, 2.94, 1.72, 0.24, "WHAT CHANGES?", 8.2, "8FB7FF", True, "center")
-    canvas.text(10.78, 3.35, 1.72, 0.28, "What is affected", 11, PAPER, True, "center")
-    canvas.text(10.78, 3.72, 1.72, 0.28, "Why it is connected", 11, PAPER, True, "center")
-    canvas.text(10.78, 4.09, 1.72, 0.28, "Where to investigate", 11, PAPER, True, "center")
+    canvas.text(10.78, 2.94, 1.72, 0.24, "ASK ONCE", 8.2, "8FB7FF", True, "center")
+    canvas.text(10.78, 3.35, 1.72, 0.28, "Reports affected", 11, PAPER, True, "center")
+    canvas.text(10.78, 3.72, 1.72, 0.28, "Model objects used", 11, PAPER, True, "center")
+    canvas.text(10.78, 4.09, 1.72, 0.28, "Source tables feeding it", 10.5, PAPER, True, "center")
 
     canvas.rect(10.55, 4.88, 2.18, 0.77, ORANGE_LIGHT, ORANGE, 1.0)
-    canvas.text(10.72, 4.98, 1.84, 0.18, "NEXT: CLAUDE ASSISTANT", 7.8, ORANGE, True, "center")
+    canvas.text(10.72, 4.98, 1.84, 0.18, "POWERAI ASSISTANT", 7.8, ORANGE, True, "center")
     canvas.text(
         10.72,
         5.20,
         1.84,
         0.30,
-        "Explain + investigate using read-only evidence",
+        "Floating modal answers using read-only app evidence",
         8.2,
         INK,
         True,
         "center",
     )
 
-    add_change_chip(canvas, 0.58, "JOINED METADATA", "Connected by IDs, not guesses", BLUE)
-    add_change_chip(canvas, 3.04, "WINDOWS PATH", "XMLA dependency made explicit", ORANGE)
-    add_change_chip(canvas, 5.50, "DEEP LINEAGE", "5-hop calls continued to 10 levels", TEAL)
-    add_change_chip(canvas, 7.96, "SESSION CONTINUITY", "Kept until logout or expiry", GREEN)
+    add_change_chip(canvas, 0.58, "AUTHENTICATED USER", "Only authorized assets", BLUE)
+    add_change_chip(canvas, 3.04, "CONNECTED METADATA", "REST + Fabric + XMLA + Snowflake", ORANGE)
+    add_change_chip(canvas, 5.50, "POWERAI MODAL", "Ask without leaving page", TEAL)
+    add_change_chip(canvas, 7.96, "ANSWER EXPORT", "Clean .md output only", GREEN)
     canvas.text(
         10.55,
         6.15,
         2.18,
         0.70,
-        "Solid boxes: delivered\nOrange next step: proposed, not yet implemented",
+        "Every answer is tied to app-collected metadata;\nPowerAI explains but does not change data.",
         8,
         MUTED,
         True,
@@ -710,14 +709,13 @@ def build_slide_two(prs: Presentation) -> SlideCanvas:
 
     add_footer(canvas, "02")
     canvas.slide.notes_slide.notes_text_frame.text = (
-        "Walk from left to right. The user stays in one Streamlit experience. The middle "
-        "layer keeps the authenticated session, joins metadata by stable IDs and runs impact "
-        "analysis. The platform boxes show why more than one connector is required: REST and "
-        "Fabric provide inventory and visual definitions, XMLA provides semantic-model detail "
-        "and requires the Windows execution path, and Snowflake provides physical source "
-        "lineage. Highlight the four delivered changes along the bottom. The Claude box is "
-        "clearly a proposed next step: it can explain and investigate the evidence through "
-        "read-only tools, but it must not replace the lineage engines or make unapproved changes."
+        "Walk from left to right. The BI user stays in one Streamlit experience and interacts "
+        "through Home, Explore, Report Lineage, impact pages and the floating PowerAI modal. "
+        "The middle layer keeps the authenticated session, joins metadata by stable IDs and "
+        "runs lineage/impact analysis. The platform boxes explain each role: REST and Fabric "
+        "provide inventory and report definitions, XMLA provides semantic-model detail, "
+        "Snowflake provides physical lineage, and PowerAI explains the app-owned evidence "
+        "without performing write actions."
     )
     return canvas
 
@@ -740,8 +738,8 @@ def main():
     prs = Presentation()
     prs.slide_width = Inches(SLIDE_W)
     prs.slide_height = Inches(SLIDE_H)
-    prs.core_properties.title = "PBI Lineage Explorer: Why, Outcomes and Architecture"
-    prs.core_properties.subject = "Two-slide executive overview"
+    prs.core_properties.title = "PBI Lineage Explorer: User Value and Architecture"
+    prs.core_properties.subject = "Two-slide user value and architecture overview"
     prs.core_properties.author = "PBI Lineage Explorer"
     prs.core_properties.keywords = "Power BI, Snowflake, lineage, architecture, impact analysis"
 
@@ -749,8 +747,8 @@ def main():
     slide_two = build_slide_two(prs)
     validate_deck(prs)
     prs.save(OUTPUT_PATH)
-    preview_one = slide_one.save_preview("slide_01_why_and_outcomes.png")
-    preview_two = slide_two.save_preview("slide_02_architecture_changes.png")
+    preview_one = slide_one.save_preview("slide_01_user_value.png")
+    preview_two = slide_two.save_preview("slide_02_architecture_flow.png")
 
     print(f"Created: {OUTPUT_PATH}")
     print(f"Preview: {preview_one}")

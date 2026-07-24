@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import time
 import os
 
@@ -48,6 +48,7 @@ from pbi_modules.claude_agent import (
     lineage_agent_tool_definitions,
     managed_agent_configuration_status,
     plan_claude_agent_route,
+    question_requests_visual_details,
     resolve_claude_settings,
     run_claude_orchestrated_agent,
 )
@@ -874,7 +875,7 @@ def render_access_records(records, empty_message, download_key):
     display_df_access = _clean_dataframe_for_display(df_access)
     st.dataframe(display_df_access, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇️ Download access API output as CSV",
+        "?? Download access API output as CSV",
         data=display_df_access.to_csv(index=False).encode("utf-8"),
         file_name="selected_artifact_access.csv",
         mime="text/csv",
@@ -1721,7 +1722,7 @@ def filter_app_objects_by_audience(scoped_reports, scoped_dashboards, selected_a
     selected = set(selected_audience_labels or [])
 
     def label(item):
-        return f"{item.get('App Name', 'N/A')} ➔ {item.get('Audience Name', 'All App Content')}"
+        return f"{item.get('App Name', 'N/A')} ? {item.get('Audience Name', 'All App Content')}"
 
     if not selected:
         return [], []
@@ -3607,7 +3608,7 @@ def render_js_visual_scanner_section(
     if not report_options:
         return
 
-    with st.expander("🌐 Power BI JS Embed API scanner", expanded=default_expanded):
+    with st.expander("?? Power BI JS Embed API scanner", expanded=default_expanded):
         st.info(
             "Use this when PBIX/Report Layout export is blocked but the same signed-in account can open/download the report. "
             "It embeds the report in the browser and scans pages/visuals using Power BI JavaScript APIs."
@@ -3713,7 +3714,7 @@ def render_visual_usage_records(records, empty_message, download_key):
     display_df_visuals = _clean_dataframe_for_display(df_visuals)
     st.dataframe(display_df_visuals, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇️ Download report visual usage as CSV",
+        "?? Download report visual usage as CSV",
         data=display_df_visuals.to_csv(index=False).encode("utf-8"),
         file_name="selected_report_visual_usage.csv",
         mime="text/csv",
@@ -6213,7 +6214,7 @@ def _strip_unwanted_measure_definition_sections(definition):
 
 
 def get_claude_measure_definition(row, settings):
-    """Call direct Claude for one selected measure definition."""
+    """Call the configured PowerAI text provider for one selected measure definition."""
     definition_settings = dict(settings)
     definition_settings["max_tokens"] = int(
         settings.get("measure_definition_max_tokens") or 900
@@ -6485,13 +6486,13 @@ def get_measure_definition(row, provider_choice="auto"):
             try:
                 return get_claude_measure_definition(row, claude_settings)
             except Exception as exc:
-                errors.append(f"claude: {exc}")
+                errors.append(f"powerai: {exc}")
                 continue
 
         if provider in {"snowflake_metadata", "metadata", "metadata_fallback"}:
             errors.append(
                 "metadata: legacy metadata-only definitions are not used for measure definitions. "
-                "Select Claude or Snowflake Cortex."
+                "Select PowerAI or Snowflake Cortex."
             )
             continue
 
@@ -8029,7 +8030,7 @@ def _build_measure_detail_rows(rows):
 def _measure_definition_provider_options():
     return [
         ("auto", "Auto (enabled provider order)"),
-        ("claude", "Claude"),
+        ("claude", "PowerAI"),
         ("snowflake_cortex", "Snowflake Cortex"),
     ]
 
@@ -8423,7 +8424,7 @@ def render_semantic_model_objects_view(contexts, headersSPA, headersSP, xmla_tok
     display_df = _apply_lineage_display_contract(display_df, "semantic_model_objects")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇️ Download semantic model objects as CSV",
+        "?? Download semantic model objects as CSV",
         data=display_df.to_csv(index=False).encode("utf-8"),
         file_name="semantic_model_columns_and_measures.csv",
         mime="text/csv",
@@ -9412,7 +9413,7 @@ def _agent_scoped_records(records, authorized_workspaces, requested_workspaces=N
     unauthorized = sorted(requested_markers - set(authorized_map))
     if unauthorized:
         raise PermissionError(
-            "Claude requested a workspace outside the authorized page scope."
+            "PowerAI requested a workspace outside the authorized page scope."
         )
     if not requested_markers:
         raise ValueError("At least one authorized workspace is required.")
@@ -9465,6 +9466,34 @@ def _agent_bounded_analysis(result, row_limit=50):
         else:
             bounded[key] = value
     return bounded
+
+
+def _agent_without_visual_details(value):
+    """Remove visual/page evidence before it is returned to PowerAI by a non-visual request."""
+    excluded_fields = {
+        "visual usage",
+        "visual evidence",
+        "visual metadata source",
+        "visual confirmed reports",
+        "visual metadata reports",
+        "visual errors",
+        "visual usage count",
+        "visual coverage",
+        "visuals requested",
+        "page name",
+        "visual id",
+        "visual name",
+        "visual type",
+    }
+    if isinstance(value, list):
+        return [_agent_without_visual_details(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _agent_without_visual_details(item)
+        for key, item in value.items()
+        if str(key).replace("_", " ").strip().casefold() not in excluded_fields
+    }
 
 
 _CLAUDE_AGENT_INDEX_PREFIX = "claude_agent_estate_index_v2_"
@@ -9921,6 +9950,8 @@ def _build_claude_lineage_tool_executor(
     headersSPA,
     headersSP,
     xmla_token,
+    *,
+    allow_visual_details=False,
 ):
     scoped_records = _agent_scoped_records(records, authorized_workspaces)
 
@@ -9936,7 +9967,9 @@ def _build_claude_lineage_tool_executor(
                 authorized_workspaces,
                 arguments.get("workspace_names"),
             )
-            include_visuals = bool(arguments.get("include_visuals", True))
+            include_visuals = bool(
+                allow_visual_details and arguments.get("include_visuals", False)
+            )
             estate_index = _build_claude_agent_estate_index(
                 estate_records,
                 headersSPA,
@@ -9945,11 +9978,21 @@ def _build_claude_lineage_tool_executor(
                 include_visuals=include_visuals,
             )
             if tool_name == "get_lineage_estate_overview":
-                return _agent_estate_overview(estate_index)
-            return _search_claude_agent_estate(
+                overview = _agent_estate_overview(estate_index)
+                return (
+                    overview
+                    if include_visuals
+                    else _agent_without_visual_details(overview)
+                )
+            search_result = _search_claude_agent_estate(
                 estate_index,
                 arguments.get("query"),
                 limit_per_category=arguments.get("limit_per_category") or 20,
+            )
+            return (
+                search_result
+                if include_visuals
+                else _agent_without_visual_details(search_result)
             )
 
         if tool_name == "search_reports":
@@ -10007,6 +10050,10 @@ def _build_claude_lineage_tool_executor(
             }
             if lineage_type not in allowed_types:
                 raise ValueError("Unsupported lineage_type.")
+            if lineage_type == "visual_usage" and not allow_visual_details:
+                raise PermissionError(
+                    "Visual-level evidence is available only when the user explicitly asks for visual details."
+                )
 
             limit = max(1, min(100, int(arguments.get("limit") or 50)))
             context = direct_report_context(record)
@@ -10060,7 +10107,9 @@ def _build_claude_lineage_tool_executor(
                 else:
                     response["measure_lineage_row_count"] = len(measure_rows)
 
-            if lineage_type in {"summary", "visual_usage"}:
+            if lineage_type == "visual_usage" or (
+                lineage_type == "summary" and allow_visual_details
+            ):
                 visual_rows = _table_impact_cached_layout_records(context)
                 if lineage_type == "visual_usage":
                     response.update(_agent_bounded_rows(visual_rows, limit))
@@ -10092,9 +10141,18 @@ def _build_claude_lineage_tool_executor(
                 headersSPA,
                 headersSP,
                 xmla_token,
-                fabric_headers=_fabric_headers_from_session(),
+                fabric_headers=(
+                    _fabric_headers_from_session()
+                    if allow_visual_details and bool(arguments.get("include_visuals", False))
+                    else None
+                ),
             )
-            return _agent_bounded_analysis(result)
+            bounded = _agent_bounded_analysis(result)
+            return (
+                bounded
+                if allow_visual_details and bool(arguments.get("include_visuals", False))
+                else _agent_without_visual_details(bounded)
+            )
 
         if tool_name == "analyze_table_impact":
             table_name = _agent_text_argument(
@@ -10113,9 +10171,18 @@ def _build_claude_lineage_tool_executor(
                 bool(arguments.get("include_partial", False)),
                 headersSPA,
                 xmla_token,
-                fabric_headers=_fabric_headers_from_session(),
+                fabric_headers=(
+                    _fabric_headers_from_session()
+                    if allow_visual_details and bool(arguments.get("include_visuals", False))
+                    else None
+                ),
             )
-            return _agent_bounded_analysis(result)
+            bounded = _agent_bounded_analysis(result)
+            return (
+                bounded
+                if allow_visual_details and bool(arguments.get("include_visuals", False))
+                else _agent_without_visual_details(bounded)
+            )
 
         if tool_name == "trace_snowflake_lineage":
             settings = _get_snowflake_lineage_settings()
@@ -10174,12 +10241,16 @@ def _build_claude_lineage_tool_executor(
                 **_agent_bounded_rows(rows, 100),
             }
 
-        raise ValueError(f"Claude requested an unknown tool: {tool_name}")
+        raise ValueError(f"PowerAI requested an unknown tool: {tool_name}")
 
     return execute
 
 
-def _prepare_claude_agent_shared_evidence(tool_executor, selected_workspaces):
+def _prepare_claude_agent_shared_evidence(
+    tool_executor,
+    selected_workspaces,
+    include_visuals=False,
+):
     """Build the authorized estate index once for a multi-agent investigation."""
     started = time.perf_counter()
     try:
@@ -10187,7 +10258,7 @@ def _prepare_claude_agent_shared_evidence(tool_executor, selected_workspaces):
             "get_lineage_estate_overview",
             {
                 "workspace_names": list(selected_workspaces or []),
-                "include_visuals": True,
+                "include_visuals": bool(include_visuals),
             },
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000)
@@ -10219,10 +10290,10 @@ def _prepare_claude_agent_shared_evidence(tool_executor, selected_workspaces):
 
 def _render_claude_agent_trace(trace, usage=None, orchestration=None):
     if orchestration:
-        selected_agents = orchestration.get("selected_agents") or []
+        selected_programs = orchestration.get("selected_agents") or []
         st.caption(
             f"Strategy: {str(orchestration.get('mode') or 'single').title()} | "
-            f"Agents: {', '.join(selected_agents) or 'general_lineage'}"
+            f"Programs: {', '.join(selected_programs) or 'general_lineage'}"
         )
         if orchestration.get("skipped"):
             st.info(
@@ -10246,7 +10317,7 @@ def _render_claude_agent_trace(trace, usage=None, orchestration=None):
             st.dataframe(pd.DataFrame(trace_rows), use_container_width=True, hide_index=True)
     if usage:
         st.caption(
-            f"Claude tokens: {int(usage.get('input_tokens') or 0):,} input, "
+            f"PowerAI tokens: {int(usage.get('input_tokens') or 0):,} input, "
             f"{int(usage.get('output_tokens') or 0):,} output"
         )
 
@@ -10360,13 +10431,19 @@ def render_claude_lineage_agent_page(
     get_artifacts,
     logout_and_clear_session,
     clear_streamlit_session_state,
+    embedded=False,
+    messages_key="claude_agent_messages_v1",
+    prompt_key="claude_agent_prompt_draft",
+    widget_key_prefix="claude_agent",
+    assistant_label="PowerAI",
 ):
-    """Render the signed-in, read-only Claude Lineage Agent."""
-    render_app_top_bar(
-        logout_and_clear_session,
-        clear_streamlit_session_state,
-        "Claude Agent",
-    )
+    """Render the signed-in assistant experience as a page or PowerAI panel."""
+    if not embedded:
+        render_app_top_bar(
+            logout_and_clear_session,
+            clear_streamlit_session_state,
+            assistant_label,
+        )
     settings = _get_claude_settings()
     try:
         resolved_settings = resolve_claude_settings(settings)
@@ -10398,20 +10475,21 @@ def render_claude_lineage_agent_page(
             if str(record.get("Dataset ID") or "").strip()
         }
     )
-    st.markdown(
-        """
-        <div class="home-hero">
-            <div class="page-eyebrow">Home</div>
-            <h1>What would you like to explore?</h1>
-            <p>Ask Claude about reports, semantic models, measures, sources, visual evidence, and downstream impact.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    metric_columns = st.columns(3)
-    metric_columns[0].metric("Workspaces", len(workspace_options))
-    metric_columns[1].metric("Reports", len(records))
-    metric_columns[2].metric("Semantic models", dataset_count)
+    if not embedded:
+        st.markdown(
+            """
+            <div class="home-hero">
+                <div class="page-eyebrow">PowerAI</div>
+                <h1>Lineage analysis</h1>
+                <p>Ask PowerAI about reports, semantic models, measures, sources, and downstream impact.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        metric_columns = st.columns(3)
+        metric_columns[0].metric("Workspaces", len(workspace_options))
+        metric_columns[1].metric("Reports", len(records))
+        metric_columns[2].metric("Semantic models", dataset_count)
 
     strategy_options = {
         "Auto (recommended)": "auto",
@@ -10429,52 +10507,80 @@ def render_claude_lineage_agent_page(
         if configured_strategy in strategy_options.values()
         else "auto"
     )
-    with st.expander("Analysis settings", expanded=False):
-        control_col, strategy_col, refresh_col, clear_col = st.columns(
-            [3, 1, 1, 1],
-            vertical_alignment="bottom",
-        )
-        with control_col:
-            selected_workspaces = st.multiselect(
-                "Authorized workspace scope",
-                options=workspace_options,
-                default=workspace_options,
-                key="claude_agent_workspace_scope",
-            )
-        with strategy_col:
-            selected_strategy_label = st.selectbox(
-                "Agent strategy",
-                options=strategy_labels,
-                index=default_strategy_index,
-                key="claude_agent_strategy",
-                disabled=bool(configuration_error),
-            )
-        with refresh_col:
-            if st.button(
-                "Refresh inventory",
-                icon=":material/refresh:",
-                use_container_width=True,
-            ):
-                st.session_state.pop("accessible_lineage_inventory_v3", None)
-                st.session_state.pop("direct_lookup_report_records_v2", None)
-                st.session_state.pop("claude_home_featured_reports_v1", None)
-                _clear_claude_agent_estate_indexes()
-                st.rerun()
-        with clear_col:
-            if st.button(
-                "Clear chat",
-                icon=":material/delete_sweep:",
-                use_container_width=True,
-            ):
-                st.session_state.pop("claude_agent_messages_v1", None)
-                st.session_state.pop("claude_agent_prompt_draft", None)
-                st.rerun()
+    workspace_scope_key = f"{widget_key_prefix}_workspace_scope"
+    strategy_key = f"{widget_key_prefix}_strategy"
+    refresh_key = f"{widget_key_prefix}_refresh_inventory"
+    clear_key = f"{widget_key_prefix}_clear_chat"
+
+    def render_powerai_settings_controls():
+        with st.expander("PowerAI settings", expanded=False):
+            if embedded:
+                st.multiselect(
+                    "Authorized workspace scope",
+                    options=workspace_options,
+                    default=workspace_options,
+                    key=workspace_scope_key,
+                )
+                st.selectbox(
+                    "Reasoning mode",
+                    options=strategy_labels,
+                    index=default_strategy_index,
+                    key=strategy_key,
+                    disabled=bool(configuration_error),
+                )
+                refresh_col, clear_col = st.columns(2)
+            else:
+                control_col, strategy_col, refresh_col, clear_col = st.columns(
+                    [3, 1, 1, 1],
+                    vertical_alignment="bottom",
+                )
+                with control_col:
+                    st.multiselect(
+                        "Authorized workspace scope",
+                        options=workspace_options,
+                        default=workspace_options,
+                        key=workspace_scope_key,
+                    )
+                with strategy_col:
+                    st.selectbox(
+                        "Reasoning mode",
+                        options=strategy_labels,
+                        index=default_strategy_index,
+                        key=strategy_key,
+                        disabled=bool(configuration_error),
+                    )
+            with refresh_col:
+                if st.button(
+                    "Refresh inventory",
+                    icon=":material/refresh:",
+                    use_container_width=True,
+                    key=refresh_key,
+                ):
+                    st.session_state.pop("accessible_lineage_inventory_v3", None)
+                    st.session_state.pop("direct_lookup_report_records_v2", None)
+                    st.session_state.pop("claude_home_featured_reports_v1", None)
+                    _clear_claude_agent_estate_indexes()
+                    st.rerun()
+            with clear_col:
+                if st.button(
+                    "Clear chat",
+                    icon=":material/delete_sweep:",
+                    use_container_width=True,
+                    key=clear_key,
+                ):
+                    st.session_state.pop(messages_key, None)
+                    st.session_state.pop(prompt_key, None)
+                    st.rerun()
+
+    if not embedded:
+        render_powerai_settings_controls()
+
     selected_workspaces = list(
-        st.session_state.get("claude_agent_workspace_scope") or workspace_options
+        st.session_state.get(workspace_scope_key) or workspace_options
     )
     selected_strategy = strategy_options.get(
         str(
-            st.session_state.get("claude_agent_strategy")
+            st.session_state.get(strategy_key)
             or strategy_labels[default_strategy_index]
         ),
         "auto",
@@ -10493,49 +10599,121 @@ def render_claude_lineage_agent_page(
         st.info("Select at least one workspace.")
         return
 
-    st.caption(
-        f"Model: {resolved_settings['model']} | "
-        f"Authorized reports: {len(_agent_scoped_records(records, selected_workspaces))} | "
-        f"Strategy: {selected_strategy.title()} | "
-        f"Runtime: {str(resolved_settings['agent_runtime']).title()}"
-    )
-
+    scoped_report_count = len(_agent_scoped_records(records, selected_workspaces))
+    if embedded:
+        st.caption(
+            f"{scoped_report_count} reports in scope | "
+            f"{selected_strategy.title()} | "
+            f"{str(resolved_settings['agent_runtime']).title()}"
+        )
+    else:
+        st.caption(
+            f"Model: {resolved_settings['model']} | "
+            f"Authorized reports: {scoped_report_count} | "
+            f"Strategy: {selected_strategy.title()} | "
+            f"Runtime: {str(resolved_settings['agent_runtime']).title()}"
+        )
     def set_prompt_suggestion(value):
-        st.session_state["claude_agent_prompt_draft"] = value
+        st.session_state[prompt_key] = value
 
-    with st.form("claude_agent_prompt_form", clear_on_submit=False):
+    def render_powerai_message(message, message_index):
+        role = str(message.get("role") or "assistant")
+        with st.chat_message(role):
+            st.markdown(str(message.get("content") or ""))
+            if role == "assistant":
+                _render_claude_agent_trace(
+                    message.get("trace") or [],
+                    message.get("usage") or {},
+                    message.get("orchestration") or {},
+                )
+                _render_claude_markdown_download(message, message_index)
+
+    def render_powerai_history(history_messages, collapse_all=False):
+        if not history_messages:
+            if embedded:
+                st.caption("Start a PowerAI conversation below.")
+            return
+        if not embedded:
+            for message_index, message in enumerate(history_messages):
+                render_powerai_message(message, message_index)
+            return
+
+        latest_user_index = -1
+        if not collapse_all:
+            for message_index in range(len(history_messages) - 1, -1, -1):
+                if str(history_messages[message_index].get("role") or "") == "user":
+                    latest_user_index = message_index
+                    break
+        old_messages = (
+            history_messages
+            if collapse_all or latest_user_index < 0
+            else history_messages[:latest_user_index]
+        )
+        latest_messages = (
+            []
+            if collapse_all or latest_user_index < 0
+            else history_messages[latest_user_index:]
+        )
+        if old_messages:
+            old_turns = sum(
+                1 for item in old_messages if str(item.get("role") or "") == "user"
+            )
+            with st.expander(
+                f"Earlier conversation ({old_turns or len(old_messages)} turn(s))",
+                expanded=False,
+            ):
+                for message_index, message in enumerate(old_messages):
+                    render_powerai_message(message, message_index)
+        for offset, message in enumerate(latest_messages, start=max(latest_user_index, 0)):
+            render_powerai_message(message, offset)
+
+    suggestions = _claude_agent_prompt_suggestions(records, selected_workspaces)
+    if embedded:
+        with st.expander("Suggested questions", expanded=False):
+            for index, suggestion in enumerate(suggestions):
+                st.button(
+                    suggestion,
+                    key=f"{widget_key_prefix}_suggestion_{index}",
+                    use_container_width=True,
+                    on_click=set_prompt_suggestion,
+                    args=(suggestion,),
+                )
+    else:
+        st.caption("Suggested questions")
+        suggestion_columns = st.columns(3)
+        for index, (column, suggestion) in enumerate(zip(suggestion_columns, suggestions)):
+            with column:
+                st.button(
+                    suggestion,
+                    key=f"{widget_key_prefix}_suggestion_{index}",
+                    use_container_width=True,
+                    on_click=set_prompt_suggestion,
+                    args=(suggestion,),
+            )
+
+    messages = list(st.session_state.get(messages_key) or [])
+    chat_history_container = st.container()
+
+    with st.form(f"{widget_key_prefix}_prompt_form", clear_on_submit=False):
         submitted_prompt = st.text_area(
-            "Ask Claude about your lineage",
+            f"Ask {assistant_label} about your lineage",
             placeholder="For example: Trace a table from Snowflake through a semantic model to the reports that use it.",
-            height=104,
-            key="claude_agent_prompt_draft",
+            height=88 if embedded else 104,
+            key=prompt_key,
             label_visibility="collapsed",
         )
         submit_prompt = st.form_submit_button(
-            "Ask Claude",
+            "Send" if embedded else f"Ask {assistant_label}",
             type="primary",
             use_container_width=True,
         )
-
-    st.caption("Suggested questions from your accessible inventory")
-    suggestion_columns = st.columns(3)
-    for index, (column, suggestion) in enumerate(
-        zip(
-            suggestion_columns,
-            _claude_agent_prompt_suggestions(records, selected_workspaces),
-        )
-    ):
-        with column:
-            st.button(
-                suggestion,
-                key=f"claude_agent_suggestion_{index}",
-                use_container_width=True,
-                on_click=set_prompt_suggestion,
-                args=(suggestion,),
-            )
+    if embedded:
+        render_powerai_settings_controls()
 
     featured_prompt = None
-    featured_reports = _claude_home_featured_reports(records, selected_workspaces)
+    featured_reports = (
+        [] if embedded else _claude_home_featured_reports(records, selected_workspaces)
+    )
     if featured_reports:
         st.markdown("### Reports to explore")
         featured_columns = st.columns(2)
@@ -10549,9 +10727,9 @@ def render_claude_lineage_agent_page(
                     st.markdown(f"**{report_name}**")
                     st.caption(f"Semantic model: {dataset_id}")
                     if st.button(
-                        "Analyze with Claude",
+                        f"Analyze with {assistant_label}",
                         key=(
-                            "claude_home_featured_"
+                            f"{widget_key_prefix}_featured_"
                             f"{_safe_widget_key(record.get('Workspace ID'))}_"
                             f"{_safe_widget_key(record.get('Report ID'))}"
                         ),
@@ -10560,44 +10738,36 @@ def render_claude_lineage_agent_page(
                         featured_prompt = (
                             f"Analyze the lineage for report {report_name} in workspace "
                             f"{workspace_name}. Include its semantic model, measures, "
-                            "source objects, and available visual evidence."
+                            "and source objects."
                         )
-
-    messages_key = "claude_agent_messages_v1"
-    messages = list(st.session_state.get(messages_key) or [])
-    for message_index, message in enumerate(messages):
-        role = str(message.get("role") or "assistant")
-        with st.chat_message(role):
-            st.markdown(str(message.get("content") or ""))
-            if role == "assistant":
-                _render_claude_agent_trace(
-                    message.get("trace") or [],
-                    message.get("usage") or {},
-                    message.get("orchestration") or {},
-                )
-                _render_claude_markdown_download(message, message_index)
 
     prompt = (
         str(submitted_prompt or "").strip()
         if submit_prompt
         else featured_prompt
     )
+    with chat_history_container:
+        render_powerai_history(messages, collapse_all=bool(prompt and embedded))
     if not prompt:
         return
 
     user_message = {"role": "user", "content": str(prompt).strip()}
     messages.append(user_message)
     st.session_state[messages_key] = messages
-    with st.chat_message("user"):
-        st.markdown(user_message["content"])
+    with chat_history_container:
+        with st.chat_message("user"):
+            st.markdown(user_message["content"])
 
     scoped_records = _agent_scoped_records(records, selected_workspaces)
+    visual_details_requested = question_requests_visual_details(user_message["content"])
+    agent_messages = messages if visual_details_requested else [user_message]
     tool_executor = _build_claude_lineage_tool_executor(
         scoped_records,
         selected_workspaces,
         headersSPA,
         headersSP,
         st.session_state.auth_bundle["spa"],
+        allow_visual_details=visual_details_requested,
     )
     snowflake_settings = _get_snowflake_lineage_settings()
     tools = lineage_agent_tool_definitions(
@@ -10611,9 +10781,10 @@ def render_claude_lineage_agent_page(
         "outside this scope. For broad questions, unknown entities, and requests to "
         "search the app, call search_entire_lineage before answering. For complete "
         "estate summaries, call get_lineage_estate_overview. The comprehensive index "
-        "covers reports, semantic objects, physical source lineage, measure lineage, "
-        "and available visual metadata. Visual usage is confirmed only when cached or "
-        "retrieved report-definition evidence is returned."
+        "covers reports, semantic objects, physical source lineage, and measure lineage. "
+        "Do not request, retrieve, or include visual-level evidence unless the user's "
+        "question explicitly asks for visual details, visual usage, pages, charts, cards, "
+        "or slicers."
     )
     route = plan_claude_agent_route(user_message["content"], request_settings)
     managed_configuration_error = None
@@ -10644,42 +10815,95 @@ def render_claude_lineage_agent_page(
                 for role in managed_status["missing_roles"]
             )
             managed_configuration_error = (
-                "Managed Claude runtime is selected but configuration is incomplete: "
+                "Managed PowerAI runtime is selected but configuration is incomplete: "
                 + ", ".join(missing)
             )
     shared_evidence = None
     shared_evidence_trace = None
 
-    with st.chat_message("assistant"):
-        spinner_placeholder = st.empty()
+    assistant_chat_context = chat_history_container.chat_message("assistant")
+    with assistant_chat_context:
+        progress_placeholder = st.empty()
+        activity_placeholder = st.empty()
+        stage_labels = {
+            "shared_evidence": "Shared lineage evidence",
+            "general_lineage": "General lineage program",
+            "powerbi_semantic": "Power BI semantic program",
+            "visual_evidence": "Visual evidence program",
+            "snowflake_lineage": "Snowflake lineage program",
+            "impact_analysis": "Impact analysis program",
+            "evidence_reviewer": "Evidence reviewer",
+            "coordinator": "Answer coordinator",
+        }
+        stage_order = (
+            ["shared_evidence", *list(route.get("specialists") or []), "coordinator"]
+            if route.get("mode") == "multi"
+            else ["general_lineage"]
+        )
+        if (
+            route.get("mode") == "multi"
+            and len(route.get("specialists") or []) >= 2
+            and int(resolved_settings["max_agent_calls"])
+            >= len(route.get("specialists") or []) + 2
+        ):
+            stage_order.insert(-1, "evidence_reviewer")
+        stage_states = {stage: "Waiting" for stage in stage_order}
+        agent_progress = progress_placeholder.progress(
+            3,
+            text=f"Preparing {assistant_label} analysis...",
+        )
+
+        def update_agent_progress(stage, status):
+            if stage not in stage_states:
+                stage_order.append(stage)
+            stage_states[stage] = str(status or "running").title()
+            completed = sum(
+                state in {"Completed", "Skipped", "Unavailable"}
+                for state in stage_states.values()
+            )
+            running = any(state == "Running" for state in stage_states.values())
+            progress_value = min(
+                95,
+                5 + int((completed / max(1, len(stage_states))) * 85) + (5 if running else 0),
+            )
+            current_label = stage_labels.get(stage, str(stage).replace("_", " ").title())
+            agent_progress.progress(
+                progress_value,
+                text=f"{current_label}: {stage_states[stage]}",
+            )
+            activity_placeholder.markdown(
+                "**Analysis activity**  \n"
+                + " | ".join(
+                    f"**{stage_labels.get(item, item.replace('_', ' ').title())}**: "
+                    f"{stage_states.get(item, 'Waiting')}"
+                    for item in stage_order
+                )
+            )
+
         try:
             if managed_configuration_error:
                 raise ClaudeConfigurationError(managed_configuration_error)
-            spinner_text = (
-                "Claude specialists are sharing lineage evidence..."
-                if route.get("mode") == "multi"
-                else "Claude is investigating lineage evidence..."
+            if route.get("mode") == "multi":
+                update_agent_progress("shared_evidence", "running")
+                (
+                    shared_evidence,
+                    shared_evidence_trace,
+                ) = _prepare_claude_agent_shared_evidence(
+                    tool_executor,
+                    selected_workspaces,
+                    include_visuals=visual_details_requested,
+                )
+                update_agent_progress("shared_evidence", "completed")
+            result = run_claude_orchestrated_agent(
+                agent_messages,
+                request_settings,
+                tool_executor,
+                tools=tools,
+                system_context=system_context,
+                shared_evidence=shared_evidence,
+                route=route,
+                progress_callback=update_agent_progress,
             )
-            with spinner_placeholder.container():
-                with st.spinner(spinner_text):
-                    if route.get("mode") == "multi":
-                        (
-                            shared_evidence,
-                            shared_evidence_trace,
-                        ) = _prepare_claude_agent_shared_evidence(
-                            tool_executor,
-                            selected_workspaces,
-                        )
-                    result = run_claude_orchestrated_agent(
-                        messages,
-                        request_settings,
-                        tool_executor,
-                        tools=tools,
-                        system_context=system_context,
-                        shared_evidence=shared_evidence,
-                        route=route,
-                    )
-            spinner_placeholder.empty()
             if shared_evidence_trace:
                 result["trace"] = [shared_evidence_trace] + list(
                     result.get("trace") or []
@@ -10705,7 +10929,7 @@ def render_claude_lineage_agent_page(
                 text="Preparing downloadable Markdown documentation...",
             )
             try:
-                document_progress.progress(35, text="Structuring Claude findings and evidence...")
+                document_progress.progress(35, text=f"Structuring {assistant_label} findings and evidence...")
                 assistant_message["markdown_document"] = build_claude_analysis_markdown(
                     question=assistant_message["question"],
                     answer=assistant_message["content"],
@@ -10723,6 +10947,9 @@ def render_claude_lineage_agent_page(
                 document_progress.progress(100, text="Markdown documentation is ready.")
             finally:
                 document_progress.empty()
+            agent_progress.progress(100, text="Analysis complete.")
+            progress_placeholder.empty()
+            activity_placeholder.empty()
             st.markdown(assistant_message["content"])
             _render_claude_agent_trace(
                 assistant_message["trace"],
@@ -10731,21 +10958,23 @@ def render_claude_lineage_agent_page(
             )
             _render_claude_markdown_download(assistant_message, "current")
         except (ClaudeAgentError, ClaudeConfigurationError) as exc:
-            spinner_placeholder.empty()
+            progress_placeholder.empty()
+            activity_placeholder.empty()
             assistant_message = {
                 "role": "assistant",
-                "content": f"Claude could not complete this request: {exc}",
+                "content": f"{assistant_label} could not complete this request: {exc}",
                 "trace": [],
                 "usage": {},
                 "orchestration": {},
             }
             st.error(assistant_message["content"])
         except Exception as exc:
-            spinner_placeholder.empty()
+            progress_placeholder.empty()
+            activity_placeholder.empty()
             assistant_message = {
                 "role": "assistant",
                 "content": (
-                    "Claude could not complete this request because the local lineage "
+                    f"{assistant_label} could not complete this request because the local lineage "
                     f"tool failed with {type(exc).__name__}. Review the server log."
                 ),
                 "trace": [],
@@ -10756,6 +10985,159 @@ def render_claude_lineage_agent_page(
 
     messages.append(assistant_message)
     st.session_state[messages_key] = messages[-24:]
+
+
+_POWERAI_PANEL_OPEN_KEY = "powerai_panel_open"
+_POWERAI_CHAT_SESSIONS_KEY = "powerai_chat_sessions_v1"
+_POWERAI_ACTIVE_CHAT_KEY = "powerai_active_chat_id"
+
+
+def _close_powerai_dialog():
+    st.session_state[_POWERAI_PANEL_OPEN_KEY] = False
+
+
+def _powerai_chat_messages_key(chat_id):
+    return f"powerai_chat_messages_{_safe_widget_key(chat_id)}"
+
+
+def _powerai_chat_prompt_key(chat_id):
+    return f"powerai_chat_prompt_{_safe_widget_key(chat_id)}"
+
+
+def _ensure_powerai_chat_sessions():
+    sessions = st.session_state.get(_POWERAI_CHAT_SESSIONS_KEY)
+    if not isinstance(sessions, dict) or not sessions:
+        chat_id = f"chat_{secrets.token_hex(4)}"
+        sessions = {
+            chat_id: {
+                "title": "Chat 1",
+                "created_at": time.time(),
+            }
+        }
+        st.session_state[_POWERAI_CHAT_SESSIONS_KEY] = sessions
+        st.session_state[_POWERAI_ACTIVE_CHAT_KEY] = chat_id
+
+    active_chat_id = str(st.session_state.get(_POWERAI_ACTIVE_CHAT_KEY) or "")
+    if active_chat_id not in sessions:
+        active_chat_id = next(iter(sessions))
+        st.session_state[_POWERAI_ACTIVE_CHAT_KEY] = active_chat_id
+    return sessions, active_chat_id
+
+
+def _powerai_chat_title(chat_id, session):
+    messages = list(st.session_state.get(_powerai_chat_messages_key(chat_id)) or [])
+    for message in messages:
+        if str(message.get("role") or "") == "user":
+            content = " ".join(str(message.get("content") or "").split())
+            if content:
+                return content[:54] + ("..." if len(content) > 54 else "")
+    return str((session or {}).get("title") or "Untitled chat")
+
+
+def _create_powerai_chat_session():
+    sessions, _active_chat_id = _ensure_powerai_chat_sessions()
+    chat_id = f"chat_{secrets.token_hex(4)}"
+    sessions[chat_id] = {
+        "title": f"Chat {len(sessions) + 1}",
+        "created_at": time.time(),
+    }
+    st.session_state[_POWERAI_CHAT_SESSIONS_KEY] = sessions
+    st.session_state[_POWERAI_ACTIVE_CHAT_KEY] = chat_id
+    st.rerun()
+
+
+def _delete_powerai_chat_session(chat_id):
+    sessions, active_chat_id = _ensure_powerai_chat_sessions()
+    if chat_id not in sessions:
+        return
+    if len(sessions) <= 1:
+        st.session_state.pop(_powerai_chat_messages_key(chat_id), None)
+        st.session_state.pop(_powerai_chat_prompt_key(chat_id), None)
+        return
+    sessions.pop(chat_id, None)
+    st.session_state.pop(_powerai_chat_messages_key(chat_id), None)
+    st.session_state.pop(_powerai_chat_prompt_key(chat_id), None)
+    if active_chat_id == chat_id:
+        st.session_state[_POWERAI_ACTIVE_CHAT_KEY] = next(iter(sessions))
+    st.session_state[_POWERAI_CHAT_SESSIONS_KEY] = sessions
+    st.rerun()
+
+
+@st.dialog(
+    "PowerAI",
+    width="large",
+    dismissible=True,
+    icon=":material/auto_awesome:",
+    on_dismiss=_close_powerai_dialog,
+)
+def render_powerai_dialog(
+    headersSPA,
+    headersSP,
+    *,
+    get_workspace_inventory,
+    get_artifacts,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    """Render the PowerAI assistant as a modal chat window."""
+    _sessions, active_chat_id = _ensure_powerai_chat_sessions()
+    st.markdown('<div class="powerai-dialog-anchor"></div>', unsafe_allow_html=True)
+    active_messages_key = _powerai_chat_messages_key(active_chat_id)
+    active_prompt_key = _powerai_chat_prompt_key(active_chat_id)
+
+    render_claude_lineage_agent_page(
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+        embedded=True,
+        messages_key=active_messages_key,
+        prompt_key=active_prompt_key,
+        widget_key_prefix=f"powerai_{_safe_widget_key(active_chat_id)}",
+        assistant_label="PowerAI",
+    )
+
+
+def render_powerai_floating_button():
+    """Render the fixed PowerAI launcher used across authenticated views."""
+    with st.container(key="powerai_fab_container"):
+        st.markdown('<span class="powerai-fab-anchor"></span>', unsafe_allow_html=True)
+        if st.button(
+            "PowerAI",
+            key="powerai_fab_open",
+            icon=":material/auto_awesome:",
+            type="primary",
+            help="Open PowerAI",
+            use_container_width=True,
+        ):
+            st.session_state[_POWERAI_PANEL_OPEN_KEY] = True
+            st.rerun()
+
+
+def render_powerai_workspace(
+    render_main,
+    headersSPA,
+    headersSP,
+    *,
+    get_workspace_inventory,
+    get_artifacts,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    """Render main application content and open PowerAI as a modal when requested."""
+    render_main()
+    render_powerai_floating_button()
+    if bool(st.session_state.get(_POWERAI_PANEL_OPEN_KEY, False)):
+        render_powerai_dialog(
+            headersSPA,
+            headersSP,
+            get_workspace_inventory=get_workspace_inventory,
+            get_artifacts=get_artifacts,
+            logout_and_clear_session=logout_and_clear_session,
+            clear_streamlit_session_state=clear_streamlit_session_state,
+        )
 
 
 def _safe_widget_key(value):
@@ -11249,7 +11631,7 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
     display_df = _clean_dataframe_for_display(df)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     st.download_button(
-        "⬇️ Download visual-to-source lookup as CSV",
+        "?? Download visual-to-source lookup as CSV",
         data=display_df.to_csv(index=False).encode("utf-8"),
         file_name="visual_measure_datasource_lookup.csv",
         mime="text/csv",
@@ -11411,7 +11793,7 @@ st.markdown(
             font-weight: 700;
             font-size: 0.76rem;
         }
-        section[data-testid="stSidebar"] {
+        section[data-testid="stSidebar"]:has(.lineage-sidebar-brand) {
             display: block;
             width: 252px !important;
             min-width: 252px !important;
@@ -11419,9 +11801,21 @@ st.markdown(
             border-right: 1px solid #dbe3ef;
             box-shadow: 8px 0 24px rgba(30, 64, 175, 0.04);
         }
-        section[data-testid="stSidebar"] > div {
+        section[data-testid="stSidebar"]:has(.lineage-sidebar-brand) > div {
             width: 252px !important;
             background: #f8fafc;
+        }
+        section[data-testid="stSidebar"]:not(:has(.lineage-sidebar-brand)),
+        section[data-testid="stSidebar"][aria-expanded="false"] {
+            width: 0 !important;
+            min-width: 0 !important;
+            border-right: 0 !important;
+            box-shadow: none !important;
+        }
+        section[data-testid="stSidebar"]:not(:has(.lineage-sidebar-brand)) > div,
+        section[data-testid="stSidebar"][aria-expanded="false"] > div {
+            width: 0 !important;
+            min-width: 0 !important;
         }
         section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
             padding: 1rem 0.8rem 1.25rem 0.8rem;
@@ -11574,11 +11968,64 @@ st.markdown(
             margin-top: 0.14rem;
         }
         .main .block-container {
-            max-width: 1540px;
+            width: 100%;
+            max-width: none;
+            margin-left: 0;
+            margin-right: 0;
             padding-top: 1.25rem;
             padding-bottom: 3rem;
-            padding-left: 2rem;
-            padding-right: 2rem;
+            padding-left: 1.4rem;
+            padding-right: 1.4rem;
+        }
+        div[data-testid="stMainBlockContainer"] {
+            width: 100%;
+            max-width: none;
+            margin-left: 0;
+            margin-right: 0;
+            padding-left: 1.4rem;
+            padding-right: 1.4rem;
+        }
+        .st-key-powerai_fab_container {
+            position: fixed;
+            right: 1.35rem;
+            bottom: 1.35rem;
+            width: 156px !important;
+            z-index: 998;
+        }
+        .st-key-powerai_fab_container .powerai-fab-anchor {
+            display: none;
+        }
+        .st-key-powerai_fab_container div.stButton > button {
+            min-height: 56px;
+            border: 1px solid #93c5fd;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #2563eb 0%, #12346b 100%);
+            color: #ffffff;
+            box-shadow: 0 18px 34px rgba(37, 99, 235, 0.34), 0 5px 14px rgba(15, 23, 42, 0.18);
+            font-weight: 850;
+            padding: 0.78rem 1.05rem;
+        }
+        .st-key-powerai_fab_container div.stButton > button:hover {
+            border-color: #bfdbfe;
+            background: linear-gradient(135deg, #1d4ed8 0%, #0f2d5c 100%);
+            color: #ffffff;
+            box-shadow: 0 20px 38px rgba(37, 99, 235, 0.42), 0 6px 16px rgba(15, 23, 42, 0.22);
+        }
+        .st-key-powerai_fab_container div.stButton > button p {
+            color: #ffffff;
+            font-size: 0.98rem;
+            font-weight: 850;
+            letter-spacing: 0;
+        }
+        .st-key-powerai_fab_container div.stButton > button span[class*="material-symbols"] {
+            color: #ffffff;
+            font-size: 1.15rem;
+        }
+        .powerai-dialog-anchor {
+            display: none;
+        }
+        div[data-testid="stVerticalBlock"]:has(.powerai-dialog-anchor) textarea {
+            min-height: 116px !important;
         }
         div[data-testid="stTabs"] button[role="tab"] {
             border-radius: 0;
@@ -12013,6 +12460,15 @@ st.markdown(
                 padding-left: 1rem;
                 padding-right: 1rem;
             }
+            .st-key-powerai_fab_container {
+                right: 1rem;
+                bottom: 1rem;
+                width: 144px !important;
+            }
+            .st-key-powerai_fab_container div.stButton > button {
+                min-height: 50px;
+                padding: 0.68rem 0.9rem;
+            }
             .login-steps,
             .auth-step-table,
             .workflow-grid,
@@ -12069,7 +12525,7 @@ if not st.session_state.auth_bundle:
     if restored_auth_bundle:
         st.session_state.auth_bundle = restored_auth_bundle
 if 'workflow_mode' not in st.session_state:
-    st.session_state.workflow_mode = "claude_agent"
+    st.session_state.workflow_mode = "landing"
 
 
 # --- APP ROUTING ---
@@ -12081,9 +12537,13 @@ headersMU = {'Authorization': f"Bearer {st.session_state.auth_bundle['mu']}", 'C
 headersSP = headersMU
 headersSPA = headersMU
 
-workflow_mode = st.session_state.get("workflow_mode", "claude_agent")
+workflow_mode = st.session_state.get("workflow_mode", "landing")
 if workflow_mode == "direct_measure":
     workflow_mode = "report_lineage"
+    st.session_state.workflow_mode = workflow_mode
+if workflow_mode == "claude_agent":
+    st.session_state[_POWERAI_PANEL_OPEN_KEY] = True
+    workflow_mode = "landing"
     st.session_state.workflow_mode = workflow_mode
 if workflow_mode not in {
     "landing",
@@ -12091,59 +12551,97 @@ if workflow_mode not in {
     "report_lineage",
     "table_impact",
     "measure_impact",
-    "claude_agent",
 }:
-    workflow_mode = "claude_agent"
+    workflow_mode = "landing"
     st.session_state.workflow_mode = workflow_mode
 
 if workflow_mode == "landing":
-    st.session_state.workflow_mode = "claude_agent"
-    workflow_mode = "claude_agent"
+    def _render_landing_main():
+        render_workflow_choice_page(
+            headersSP,
+            get_workspace_inventory=get_workspace_inventory,
+            get_artifacts=get_artifacts,
+            logout_and_clear_session=logout_and_clear_session,
+            clear_streamlit_session_state=clear_streamlit_session_state,
+        )
 
-if workflow_mode == "report_lineage":
-    render_direct_measure_lookup_page(
+    render_powerai_workspace(
+        _render_landing_main,
         headersSPA,
         headersSP,
-        headersMU,
         get_workspace_inventory=get_workspace_inventory,
         get_artifacts=get_artifacts,
-        render_source_db_lineage_view=render_source_db_lineage_view,
-        render_semantic_model_objects_view=render_semantic_model_objects_view,
-        render_measure_source_lineage_view=render_measure_source_lineage_view,
-        render_report_layout_view=render_upload_only_report_layout_view,
-        render_visual_source_lookup_view=render_visual_source_lookup_view,
-        safe_widget_key=_safe_widget_key,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
+    st.stop()
+
+if workflow_mode == "report_lineage":
+    def _render_report_lineage_main():
+        render_direct_measure_lookup_page(
+            headersSPA,
+            headersSP,
+            headersMU,
+            get_workspace_inventory=get_workspace_inventory,
+            get_artifacts=get_artifacts,
+            render_source_db_lineage_view=render_source_db_lineage_view,
+            render_semantic_model_objects_view=render_semantic_model_objects_view,
+            render_measure_source_lineage_view=render_measure_source_lineage_view,
+            render_report_layout_view=render_upload_only_report_layout_view,
+            render_visual_source_lookup_view=render_visual_source_lookup_view,
+            safe_widget_key=_safe_widget_key,
+            logout_and_clear_session=logout_and_clear_session,
+            clear_streamlit_session_state=clear_streamlit_session_state,
+        )
+
+    render_powerai_workspace(
+        _render_report_lineage_main,
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
     st.stop()
 
 if workflow_mode == "table_impact":
-    render_table_impact_page(
+    def _render_table_impact_main():
+        render_table_impact_page(
+            headersSPA,
+            headersSP,
+            get_workspace_inventory=get_workspace_inventory,
+            get_artifacts=get_artifacts,
+            render_table_impact_analysis_view=render_table_impact_analysis_view,
+            logout_and_clear_session=logout_and_clear_session,
+            clear_streamlit_session_state=clear_streamlit_session_state,
+        )
+
+    render_powerai_workspace(
+        _render_table_impact_main,
         headersSPA,
         headersSP,
         get_workspace_inventory=get_workspace_inventory,
         get_artifacts=get_artifacts,
-        render_table_impact_analysis_view=render_table_impact_analysis_view,
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
     st.stop()
 
 if workflow_mode == "measure_impact":
-    render_measure_impact_page(
-        headersSPA,
-        headersSP,
-        get_workspace_inventory=get_workspace_inventory,
-        get_artifacts=get_artifacts,
-        render_measure_impact_analysis_view=render_measure_impact_analysis_view,
-        logout_and_clear_session=logout_and_clear_session,
-        clear_streamlit_session_state=clear_streamlit_session_state,
-    )
-    st.stop()
+    def _render_measure_impact_main():
+        render_measure_impact_page(
+            headersSPA,
+            headersSP,
+            get_workspace_inventory=get_workspace_inventory,
+            get_artifacts=get_artifacts,
+            render_measure_impact_analysis_view=render_measure_impact_analysis_view,
+            logout_and_clear_session=logout_and_clear_session,
+            clear_streamlit_session_state=clear_streamlit_session_state,
+        )
 
-if workflow_mode == "claude_agent":
-    render_claude_lineage_agent_page(
+    render_powerai_workspace(
+        _render_measure_impact_main,
         headersSPA,
         headersSP,
         get_workspace_inventory=get_workspace_inventory,
@@ -12157,6 +12655,16 @@ st.session_state.workflow_mode = "guided"
 
 
 render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, "Guided workflow")
+render_powerai_floating_button()
+if bool(st.session_state.get(_POWERAI_PANEL_OPEN_KEY, False)):
+    render_powerai_dialog(
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
 st.markdown(
     """
     <div class="page-header">
@@ -12263,7 +12771,7 @@ if st.session_state.auth_bundle:
 
                     options_data = all_reports_data
                     if options_data:
-                        artifact_mapping = {f"{item['Workspace Name']} ➔ {item['Name']}": item for item in options_data}
+                        artifact_mapping = {f"{item['Workspace Name']} ? {item['Name']}": item for item in options_data}
                         with selection_report_col:
                             selected_art_keys = render_checkbox_selector(
                                 "Report",
@@ -12501,7 +13009,7 @@ if st.session_state.auth_bundle:
                                             **source_info
                                         })
                             progress_bar.empty()
-                            st.write("##### 🖼️ Dashboard Tiles Info")
+                            st.write("##### ??? Dashboard Tiles Info")
                             if all_dashboard_tiles:
                                 df_dashboard_tiles = pd.DataFrame(all_dashboard_tiles)
                                 st.dataframe(df_dashboard_tiles, use_container_width=True, hide_index=True)
@@ -12684,7 +13192,7 @@ if st.session_state.auth_bundle:
                     options_data = all_app_reports if artifact_choice == "Report" else all_app_dashboards
                     if options_data:
                         app_art_mapping = {
-                            f"{item.get('App Name', 'N/A')} ➔ {item.get('Name', 'Unnamed')}": item
+                            f"{item.get('App Name', 'N/A')} ? {item.get('Name', 'Unnamed')}": item
                             for item in options_data
                         }
                         with st.sidebar:
@@ -12697,12 +13205,12 @@ if st.session_state.auth_bundle:
                         with st.sidebar:
                             st.info(f"No app {artifact_choice.lower()}s found for the selected app(s).")
 
-            app_tab_labels = ["📱 Apps Inventory"]
+            app_tab_labels = ["?? Apps Inventory"]
             if selected_app_names:
-                app_tab_labels.append("🗂️ Combined App Artifacts")
+                app_tab_labels.append("??? Combined App Artifacts")
             if selected_art_keys:
-                app_tab_labels.append("🔍 App Deep Dive: Lineage")
-                app_tab_labels.append("🧩 Visual Level Details")
+                app_tab_labels.append("?? App Deep Dive: Lineage")
+                app_tab_labels.append("?? Visual Level Details")
 
             app_visual_lineage_tab_label = "Visual Item Lineage"
             app_uploaded_visual_lineage_ready = False
@@ -12722,8 +13230,8 @@ if st.session_state.auth_bundle:
             app_tabs = st.tabs(app_tab_labels)
             app_tab_map = dict(zip(app_tab_labels, app_tabs))
 
-            with app_tab_map["📱 Apps Inventory"]:
-                st.write("### 📱 Apps Inventory")
+            with app_tab_map["?? Apps Inventory"]:
+                st.write("### ?? Apps Inventory")
                 if apps:
                     df_apps = pd.DataFrame(apps)[['name', 'id']]
                     st.dataframe(df_apps, use_container_width=True, hide_index=True)
@@ -12741,9 +13249,9 @@ if st.session_state.auth_bundle:
                     st.info("No apps found.")
 
             if selected_app_names:
-                with app_tab_map["🗂️ Combined App Artifacts"]:
-                    st.write("### 🗂️ Combined App Artifacts")
-                    tab1, tab2, tab3 = st.tabs(["📊 App Reports", "📈 App Dashboards", "👥 App Access"])
+                with app_tab_map["??? Combined App Artifacts"]:
+                    st.write("### ??? Combined App Artifacts")
+                    tab1, tab2, tab3 = st.tabs(["?? App Reports", "?? App Dashboards", "?? App Access"])
 
                     with tab1:
                         if all_app_reports:
@@ -12810,13 +13318,13 @@ if st.session_state.auth_bundle:
                 total_app_items = len(selected_art_keys)
                 xmla_token = st.session_state.auth_bundle['spa']
 
-                with app_tab_map["🔍 App Deep Dive: Lineage"]:
-                    st.write("### 🔍 App Deep Dive: Lineage")
+                with app_tab_map["?? App Deep Dive: Lineage"]:
+                    st.write("### ?? App Deep Dive: Lineage")
                     st.caption(f"Showing lineage for {len(selected_art_keys)} selected app {artifact_choice.lower()}(s). Change selections from the left panel.")
                     deep_dive_tab_source, deep_dive_tab_semantic, deep_dive_tab_measure_lineage = st.tabs([
-                        "🔌 Source DB Lineage",
-                        "📐 Semantic Model Objects",
-                        "🔗 Measure Source Lineage"
+                        "?? Source DB Lineage",
+                        "?? Semantic Model Objects",
+                        "?? Measure Source Lineage"
                     ])
 
                     with deep_dive_tab_source:
@@ -12914,7 +13422,7 @@ if st.session_state.auth_bundle:
                                             **source_info
                                         })
                             progress_bar.empty()
-                            st.write("##### 🖼️ App Dashboard Tiles Info")
+                            st.write("##### ??? App Dashboard Tiles Info")
                             if all_app_tiles:
                                 df_app_tiles = pd.DataFrame(all_app_tiles)
                                 st.dataframe(df_app_tiles, use_container_width=True, hide_index=True)
@@ -12927,7 +13435,7 @@ if st.session_state.auth_bundle:
                             else:
                                 st.info("No tiles found in selected App dashboards.")
                             st.markdown("---")
-                            st.write("##### 🔌 Source DB Lineage")
+                            st.write("##### ?? Source DB Lineage")
                             render_source_db_lineage_records(
                                 all_app_dashboard_source_lineage,
                                 "No source DB lineage found from selected App dashboard tiles.",
@@ -12961,12 +13469,12 @@ if st.session_state.auth_bundle:
                         elif artifact_choice == "Dashboard":
                             st.info("Measure lineage is report/model based. Select App Report to view measure-to-source-column lineage.")
 
-                with app_tab_map["🧩 Visual Level Details"]:
-                    st.write("### 🧩 Visual Level Details")
+                with app_tab_map["?? Visual Level Details"]:
+                    st.write("### ?? Visual Level Details")
                     st.caption("Retrieve report definitions automatically and build visual-to-source lookup from their layout metadata.")
                     app_visual_layout_tab, app_visual_lookup_tab = st.tabs([
-                        "🧩 Report Layout",
-                        "🔎 Visual Source Lookup"
+                        "?? Report Layout",
+                        "?? Visual Source Lookup"
                     ])
                     with app_visual_layout_tab:
                         if artifact_choice == "Report":
