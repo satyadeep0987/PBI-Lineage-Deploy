@@ -103,10 +103,12 @@ config/app_settings.template.json
 On Streamlit Cloud, override values through secrets sections:
 
 ```toml
-[openai_measure_definitions]
+[claude]
 enabled = true
-api_key = "<openai-api-key>"
-model = "gpt-5-nano"
+api_key = "<anthropic-api-key>"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-6"
+max_tool_rounds = 6
 
 [snowflake_lineage]
 enabled = true
@@ -128,6 +130,37 @@ config/app_settings.json
 ```
 
 Do not commit those filled files.
+
+### Claude Lineage Agent
+
+**Claude Agent** is the first destination in the authenticated sidebar. It can
+use direct Anthropic tool calling or Claude Managed Agents over the signed-in
+user's authorized workspace scope. Broad questions search a cached estate index containing reports,
+semantic objects, source lineage, measure dependencies, and available visual
+metadata in one request. The agent can then inspect a report, run measure/table
+impact, or trace configured Snowflake lineage. All tools are read-only, and the
+first model turn must select a lineage tool before answering.
+
+The default **Auto** strategy uses one general agent for simple questions. For
+cross-system questions, it shares one cached evidence index with only the
+needed Power BI, visual, Snowflake, and impact specialists, then returns one
+coordinated answer within the configured token and estimated-cost guard.
+
+To use Managed Agents created in Claude Console, set
+`agent_runtime = "managed"` and paste the shared `env_...` identifier and the
+role-specific `agent_...` identifiers into `[claude.managed_agents]` in the
+same secret store as the API key. The exact block and required custom-tool
+setup are in [the Claude Multi-Agent guide](docs/CLAUDE_MULTI_AGENT_GUIDE.md#configure-your-existing-claude-managed-agents).
+Keep Power BI, Snowflake, Fabric, and Entra credentials out of Claude Console;
+the application executes its read-only tools locally and returns only bounded
+results to the agent.
+
+See [`docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md`](docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md)
+for the change inventory, tool contract, security controls, hosting setup, and
+validation checklist. See [`docs/CLAUDE_MULTI_AGENT_GUIDE.md`](docs/CLAUDE_MULTI_AGENT_GUIDE.md)
+for setup, routing behavior, budgets, detailed function references, and outputs.
+For every Claude configuration field and recommended efficiency profiles, see
+[`docs/CLAUDE_CONFIGURATION_REFERENCE.md`](docs/CLAUDE_CONFIGURATION_REFERENCE.md).
 
 ## Local Test
 
@@ -165,7 +198,7 @@ $env:PBI_CA_BUNDLE = "C:\certificates\organization-ca-chain.pem"
 
 Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. `pywin32` cannot be installed or used on Streamlit Community Cloud, so XMLA-dependent semantic lineage features require either a Windows deployment host or a separate Windows backend service. Do not add unqualified `pywin32` to `requirements.txt` for Streamlit Cloud because Linux dependency installation will fail.
 
-REST-based Power BI inventory, report/app listing, Fabric report-definition retrieval, visual-layout parsing, CSV downloads, manual layout uploads, OpenAI measure explanations, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access. Report definitions use `api.fabric.microsoft.com` and do not require Windows, `pywin32`, MSOLAP, or full PBIX download permission.
+REST-based Power BI inventory, report/app listing, Fabric report-definition retrieval, visual-layout parsing, CSV downloads, manual layout uploads, direct Claude measure explanations, the Claude Lineage Agent, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access. Report definitions use `api.fabric.microsoft.com` and do not require Windows, `pywin32`, MSOLAP, or full PBIX download permission. XMLA-backed Claude tools still require the Windows XMLA execution path.
 
 ## Git Push
 

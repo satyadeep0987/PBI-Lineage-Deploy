@@ -28,12 +28,24 @@ from urllib.parse import quote
 from pbi_modules.app_shell import (
     check_authenticated_session,
     direct_report_context,
+    filter_excluded_workspaces,
+    get_accessible_inventory,
     render_app_top_bar,
     render_direct_measure_lookup_page,
     render_login_page,
     render_measure_impact_page,
     render_table_impact_page,
     render_workflow_choice_page,
+)
+from pbi_modules.claude_agent import (
+    ClaudeAgentError,
+    ClaudeConfigurationError,
+    generate_claude_text,
+    lineage_agent_tool_definitions,
+    managed_agent_configuration_status,
+    plan_claude_agent_route,
+    resolve_claude_settings,
+    run_claude_orchestrated_agent,
 )
 from pbi_modules.controls import (
     render_checkbox_selector,
@@ -686,7 +698,7 @@ def get_workspace_inventory(headers):
     ws_url = "https://api.powerbi.com/v1.0/myorg/groups"
     response = requests.get(ws_url, headers=headers)
     if response.status_code == 200:
-        return response.json().get('value', [])
+        return filter_excluded_workspaces(response.json().get('value', []))
     return []
 
 def get_all_app_details(headers):
@@ -5509,9 +5521,9 @@ def _get_snowflake_cortex_settings():
     return (Utils.load_app_settings().get("snowflake_cortex") or {}).copy()
 
 
-def _get_openai_measure_definition_settings():
-    """Return OpenAI measure-detail settings from config/app_settings.json."""
-    return (Utils.load_app_settings().get("openai_measure_definitions") or {}).copy()
+def _get_claude_settings():
+    """Return direct Anthropic settings shared by the agent and measure details."""
+    return (Utils.load_app_settings().get("claude") or {}).copy()
 
 
 def _get_measure_definition_provider_order():
@@ -5526,7 +5538,7 @@ def _get_measure_definition_provider_order():
         for item in configured
         if str(item or "").strip() and str(item or "").strip().lower() not in removed_providers
     ]
-    return order or ["snowflake_cortex", "openai"]
+    return order or ["claude", "snowflake_cortex"]
 
 
 def _get_default_measure_definition_provider():
@@ -6146,29 +6158,12 @@ def _build_cortex_measure_definition_prompt(row, settings):
     )
 
 
-def _build_openai_measure_definition_prompt(row, settings):
+def _build_claude_measure_definition_prompt(row, settings):
     payload = _measure_definition_prompt_payload(row, settings)
     return (
         "Measure lineage metadata JSON:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
-
-
-def _extract_openai_response_text(response_json):
-    if isinstance(response_json.get("output_text"), str) and response_json["output_text"].strip():
-        return response_json["output_text"].strip()
-
-    text_parts = []
-    for output_item in response_json.get("output", []) or []:
-        if not isinstance(output_item, dict):
-            continue
-        for content_item in output_item.get("content", []) or []:
-            if not isinstance(content_item, dict):
-                continue
-            text = content_item.get("text")
-            if text:
-                text_parts.append(str(text))
-    return "\n".join(text_parts).strip()
 
 
 def _measure_definition_heading_text(line):
@@ -6213,72 +6208,23 @@ def _strip_unwanted_measure_definition_sections(definition):
     return "\n".join(output_lines).strip()
 
 
-def _openai_model_supports_temperature(model):
-    model_name = str(model or "").strip().lower()
-    if model_name.startswith("gpt-5"):
-        return False
-    return True
-
-
-def _openai_error_is_unsupported_temperature(response):
-    try:
-        error_json = response.json()
-    except Exception:
-        error_json = {}
-    error = error_json.get("error") if isinstance(error_json, dict) else {}
-    message = str((error or {}).get("message") or response.text or "").lower()
-    param = str((error or {}).get("param") or "").lower()
-    return response.status_code == 400 and (param == "temperature" or "temperature" in message)
-
-
-def get_openai_measure_definition(row, settings):
-    """Call the OpenAI Responses API for one selected measure definition."""
-    if not settings.get("enabled", False):
-        raise RuntimeError("Enable openai_measure_definitions in config/app_settings.json to use OpenAI.")
-
-    api_key = str(settings.get("api_key") or "").strip()
-    endpoint = str(settings.get("endpoint") or "https://api.openai.com/v1/responses").strip()
-    model = str(settings.get("model") or "").strip()
-    instructions = str(settings.get("instructions") or "").strip()
-    timeout_seconds = int(settings.get("timeout_seconds") or 90)
-    max_output_tokens = int(settings.get("max_output_tokens") or 900)
-
-    missing = []
-    if not api_key:
-        missing.append("api_key")
-    if not endpoint:
-        missing.append("endpoint")
-    if not model:
-        missing.append("model")
+def get_claude_measure_definition(row, settings):
+    """Call direct Claude for one selected measure definition."""
+    definition_settings = dict(settings)
+    definition_settings["max_tokens"] = int(
+        settings.get("measure_definition_max_tokens") or 900
+    )
+    instructions = str(
+        settings.get("measure_definition_instructions") or ""
+    ).strip()
     if not instructions:
-        missing.append("instructions")
-    if missing:
-        raise RuntimeError(f"Missing openai_measure_definitions config: {', '.join(missing)}")
+        raise RuntimeError("Missing claude.measure_definition_instructions.")
 
-    request_body = {
-        "model": model,
-        "instructions": instructions,
-        "input": _build_openai_measure_definition_prompt(row, settings),
-        "max_output_tokens": max_output_tokens,
-    }
-    if settings.get("temperature") is not None and _openai_model_supports_temperature(model):
-        request_body["temperature"] = float(settings.get("temperature"))
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(endpoint, headers=headers, json=request_body, timeout=timeout_seconds)
-    if response.status_code >= 400 and "temperature" in request_body and _openai_error_is_unsupported_temperature(response):
-        request_body.pop("temperature", None)
-        response = requests.post(endpoint, headers=headers, json=request_body, timeout=timeout_seconds)
-
-    if response.status_code >= 400:
-        raise RuntimeError(f"OpenAI API error {response.status_code}: {response.text}")
-
-    definition = _extract_openai_response_text(response.json())
-    if not definition:
-        raise RuntimeError("OpenAI returned no measure detail text.")
+    definition = generate_claude_text(
+        _build_claude_measure_definition_prompt(row, settings),
+        definition_settings,
+        system=instructions,
+    )
     return _strip_unwanted_measure_definition_sections(definition)
 
 
@@ -6512,8 +6458,8 @@ def get_measure_definition(row, provider_choice="auto"):
     else:
         provider_order = [provider_choice]
 
+    claude_settings = _get_claude_settings()
     snowflake_settings = _get_snowflake_cortex_settings()
-    openai_settings = _get_openai_measure_definition_settings()
     errors = []
     tried_any = False
 
@@ -6530,32 +6476,30 @@ def get_measure_definition(row, provider_choice="auto"):
                 errors.append(f"snowflake_cortex: {exc}")
                 continue
 
-        if provider in {"openai", "openai_measure_definitions", "open_api"}:
-            if not openai_settings.get("enabled", False):
-                if provider_choice not in {"auto", "config_order", "enabled"}:
-                    raise RuntimeError("Enable openai_measure_definitions.enabled in config/app_settings.json to use OpenAI.")
-                continue
+        if provider in {"claude", "anthropic", "claude_measure_definitions"}:
             tried_any = True
             try:
-                return get_openai_measure_definition(row, openai_settings)
+                return get_claude_measure_definition(row, claude_settings)
             except Exception as exc:
-                errors.append(f"openai: {exc}")
+                errors.append(f"claude: {exc}")
                 continue
 
         if provider in {"snowflake_metadata", "metadata", "metadata_fallback"}:
             errors.append(
                 "metadata: legacy metadata-only definitions are not used for measure definitions. "
-                "Select OpenAI LLM or Snowflake Cortex."
+                "Select Claude or Snowflake Cortex."
             )
             continue
 
     if not tried_any:
         raise RuntimeError(
-            "No measure definition provider is enabled. Enable snowflake_cortex.enabled "
-            "or openai_measure_definitions.enabled."
+            "No measure definition provider is enabled. Enable claude.enabled "
+            "or snowflake_cortex.enabled."
         )
 
-    raise RuntimeError("All enabled measure definition providers failed:\n" + "\n".join(errors))
+    raise RuntimeError(
+        "All configured measure definition providers failed:\n" + "\n".join(errors)
+    )
 
 
 def _fetch_snowflake_lineage_once(conn, object_name, object_domain, direction):
@@ -8081,7 +8025,7 @@ def _build_measure_detail_rows(rows):
 def _measure_definition_provider_options():
     return [
         ("auto", "Auto (enabled provider order)"),
-        ("openai", "OpenAI LLM"),
+        ("claude", "Claude"),
         ("snowflake_cortex", "Snowflake Cortex"),
     ]
 
@@ -9434,6 +9378,1331 @@ def render_measure_impact_analysis_view(records, headersSPA, headersSP, xmla_tok
             st.dataframe(pd.DataFrame(result["visual_errors"]), use_container_width=True, hide_index=True)
 
 
+def _agent_text_argument(value, field_name, max_length=500):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required.")
+    if len(text) > max_length:
+        raise ValueError(f"{field_name} exceeds {max_length} characters.")
+    if any(character in text for character in ("\x00", "\r", "\n", ";")):
+        raise ValueError(f"{field_name} contains unsupported characters.")
+    return text
+
+
+def _agent_scoped_records(records, authorized_workspaces, requested_workspaces=None):
+    """Enforce the UI-selected workspace scope for every agent tool."""
+    authorized_map = {
+        str(name).strip().casefold(): str(name).strip()
+        for name in authorized_workspaces or []
+        if str(name).strip()
+    }
+    requested = requested_workspaces or list(authorized_map.values())
+    if isinstance(requested, str):
+        requested = [requested]
+
+    requested_markers = {
+        str(name).strip().casefold()
+        for name in requested
+        if str(name).strip()
+    }
+    unauthorized = sorted(requested_markers - set(authorized_map))
+    if unauthorized:
+        raise PermissionError(
+            "Claude requested a workspace outside the authorized page scope."
+        )
+    if not requested_markers:
+        raise ValueError("At least one authorized workspace is required.")
+
+    return [
+        record
+        for record in records or []
+        if str(record.get("Workspace Name") or "").strip().casefold()
+        in requested_markers
+    ]
+
+
+def _agent_find_report(records, report_id):
+    requested_id = _agent_text_argument(report_id, "report_id", max_length=200)
+    record = next(
+        (
+            item
+            for item in records or []
+            if str(item.get("Report ID") or "").strip().casefold()
+            == requested_id.casefold()
+        ),
+        None,
+    )
+    if not record:
+        raise PermissionError(
+            "The report was not found in the signed-in user's authorized workspace scope."
+        )
+    return record
+
+
+def _agent_bounded_rows(rows, limit):
+    row_limit = max(1, min(100, int(limit or 50)))
+    cleaned_rows = [row for row in rows or [] if isinstance(row, dict)]
+    return {
+        "row_count": len(cleaned_rows),
+        "returned_rows": min(len(cleaned_rows), row_limit),
+        "truncated": len(cleaned_rows) > row_limit,
+        "rows": cleaned_rows[:row_limit],
+    }
+
+
+def _agent_bounded_analysis(result, row_limit=50):
+    bounded = {}
+    for key, value in (result or {}).items():
+        if isinstance(value, list):
+            bounded[f"{key}_count"] = len(value)
+            bounded[key] = value[:row_limit]
+            if len(value) > row_limit:
+                bounded[f"{key}_truncated"] = True
+        else:
+            bounded[key] = value
+    return bounded
+
+
+_CLAUDE_AGENT_INDEX_PREFIX = "claude_agent_estate_index_v2_"
+
+
+def _clear_claude_agent_estate_indexes():
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(_CLAUDE_AGENT_INDEX_PREFIX):
+            st.session_state.pop(key, None)
+
+
+def _agent_estate_index_cache_key(records, include_visuals, fabric_available):
+    identity = [
+        {
+            "workspace_id": record.get("Workspace ID"),
+            "report_id": record.get("Report ID"),
+            "dataset_id": record.get("Dataset ID"),
+        }
+        for record in records or []
+    ]
+    raw = json.dumps(
+        {
+            "records": sorted(
+                identity,
+                key=lambda row: (
+                    str(row.get("workspace_id") or ""),
+                    str(row.get("report_id") or ""),
+                    str(row.get("dataset_id") or ""),
+                ),
+            ),
+            "include_visuals": bool(include_visuals),
+            "fabric_available": bool(fabric_available),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return _CLAUDE_AGENT_INDEX_PREFIX + hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()[:20]
+
+
+def _agent_index_metadata(context, connected_reports):
+    return {
+        "Agent Workspace Name": context.get("Workspace"),
+        "Agent Workspace ID": context.get("Target Workspace ID"),
+        "Agent Dataset ID": context.get("Dataset ID"),
+        "Agent Connected Reports": "; ".join(
+            sorted(
+                {
+                    str(report.get("Source Report"))
+                    for report in connected_reports
+                    if report.get("Source Report")
+                },
+                key=str.casefold,
+            )
+        ),
+        "Agent Connected Report IDs": "; ".join(
+            sorted(
+                {
+                    str(report.get("Report ID"))
+                    for report in connected_reports
+                    if report.get("Report ID")
+                }
+            )
+        ),
+    }
+
+
+def _build_claude_agent_estate_index(
+    records,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    *,
+    include_visuals=True,
+):
+    """Build one cached, authorized search index across all app lineage surfaces."""
+    fabric_headers = _fabric_headers_from_session() if include_visuals else None
+    cache_key = _agent_estate_index_cache_key(
+        records,
+        include_visuals,
+        bool(fabric_headers),
+    )
+    cached = st.session_state.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    contexts = [direct_report_context(record) for record in records or []]
+    model_groups = {}
+    for context in contexts:
+        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        dataset_id = str(context.get("Dataset ID") or "").strip()
+        if workspace_id and dataset_id:
+            model_groups.setdefault((workspace_id, dataset_id), []).append(context)
+
+    report_rows = [
+        {
+            "Workspace Name": record.get("Workspace Name"),
+            "Workspace ID": record.get("Workspace ID"),
+            "Report Name": record.get("Report Name"),
+            "Report ID": record.get("Report ID"),
+            "Dataset ID": record.get("Dataset ID"),
+            "Report Type": record.get("Report Type"),
+            "Report Format": record.get("Report Format"),
+        }
+        for record in records or []
+    ]
+    semantic_rows = []
+    source_rows = []
+    measure_rows = []
+    visual_rows = []
+    visual_coverage = []
+    errors = []
+
+    model_items = list(model_groups.items())
+    progress = st.progress(0, text="Indexing authorized lineage models...")
+    try:
+        for index, (model_key, report_contexts) in enumerate(model_items):
+            representative = report_contexts[0]
+            progress.progress(
+                (index + 1) / max(1, len(model_items)),
+                text=(
+                    f"Indexing model {index + 1} of {len(model_items)}: "
+                    f"{representative.get('Source Report') or model_key[1]}"
+                ),
+            )
+            metadata = _agent_index_metadata(representative, report_contexts)
+            cache_prefix = (
+                f"claude_estate_{_safe_widget_key(model_key[0])}_"
+                f"{_safe_widget_key(model_key[1])}"
+            )
+
+            try:
+                model_semantic_rows = _get_semantic_objects_for_contexts(
+                    [representative],
+                    headersSPA,
+                    headersSP,
+                    xmla_token,
+                    cache_prefix,
+                )
+                semantic_rows.extend(
+                    [{**row, **metadata} for row in model_semantic_rows]
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "surface": "semantic_objects",
+                        "dataset_id": model_key[1],
+                        "error": str(exc)[:1000],
+                    }
+                )
+
+            try:
+                model_source_rows = _get_source_lineage_for_context(
+                    representative,
+                    headersSPA,
+                    xmla_token,
+                    cache_prefix,
+                    auth_headers=[("MasterUser", headersSPA)],
+                )
+                source_rows.extend(
+                    [{**row, **metadata} for row in model_source_rows]
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "surface": "source_lineage",
+                        "dataset_id": model_key[1],
+                        "error": str(exc)[:1000],
+                    }
+                )
+
+            try:
+                model_measure_rows = _get_measure_lineage_rows_for_contexts(
+                    [representative],
+                    headersSPA,
+                    xmla_token,
+                    cache_prefix,
+                )
+                measure_rows.extend(
+                    [{**row, **metadata} for row in model_measure_rows]
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "surface": "measure_lineage",
+                        "dataset_id": model_key[1],
+                        "error": str(exc)[:1000],
+                    }
+                )
+    finally:
+        progress.empty()
+
+    if include_visuals:
+        for context in contexts:
+            report_id = context.get("Report ID")
+            cached_visuals = _table_impact_cached_layout_records(context)
+            metadata_source = "Cached report definition" if cached_visuals else "Unavailable"
+            visual_error = None
+            report_visual_rows = cached_visuals
+
+            if not report_visual_rows and fabric_headers:
+                (
+                    report_visual_rows,
+                    metadata_source,
+                    visual_error,
+                ) = _impact_visual_layout_records(
+                    context,
+                    headersSPA,
+                    fabric_headers=fabric_headers,
+                )
+
+            visual_coverage.append(
+                {
+                    "workspace_name": context.get("Workspace"),
+                    "report_name": context.get("Source Report"),
+                    "report_id": report_id,
+                    "available": bool(report_visual_rows),
+                    "row_count": len(report_visual_rows),
+                    "source": metadata_source,
+                    "error": str(visual_error or "")[:1000],
+                }
+            )
+            visual_metadata = {
+                "Agent Workspace Name": context.get("Workspace"),
+                "Agent Workspace ID": context.get("Target Workspace ID"),
+                "Agent Dataset ID": context.get("Dataset ID"),
+                "Agent Report Name": context.get("Source Report"),
+                "Agent Report ID": report_id,
+            }
+            visual_rows.extend(
+                [{**row, **visual_metadata} for row in report_visual_rows]
+            )
+
+    index_result = {
+        "created_at": time.time(),
+        "workspaces": sorted(
+            {
+                str(record.get("Workspace Name"))
+                for record in records or []
+                if record.get("Workspace Name")
+            },
+            key=str.casefold,
+        ),
+        "reports": report_rows,
+        "model_count": len(model_groups),
+        "semantic_objects": semantic_rows,
+        "source_lineage": source_rows,
+        "measure_lineage": measure_rows,
+        "visual_usage": visual_rows,
+        "visual_coverage": visual_coverage,
+        "visuals_requested": bool(include_visuals),
+        "fabric_authorized": bool(fabric_headers),
+        "errors": errors,
+    }
+    st.session_state[cache_key] = index_result
+    return index_result
+
+
+def _agent_distinct_meaningful_values(rows, fields):
+    values = set()
+    for row in rows or []:
+        for field in fields:
+            value = str(row.get(field) or "").strip()
+            if _is_meaningful_value(value):
+                values.add(value.casefold())
+    return len(values)
+
+
+def _agent_estate_overview(index_result):
+    semantic_rows = index_result.get("semantic_objects") or []
+    source_rows = index_result.get("source_lineage") or []
+    measure_rows = index_result.get("measure_lineage") or []
+    visual_rows = index_result.get("visual_usage") or []
+    coverage = index_result.get("visual_coverage") or []
+    return {
+        "workspace_count": len(index_result.get("workspaces") or []),
+        "workspaces": index_result.get("workspaces") or [],
+        "report_count": len(index_result.get("reports") or []),
+        "model_count": int(index_result.get("model_count") or 0),
+        "semantic_object_rows": len(semantic_rows),
+        "distinct_semantic_objects": _agent_distinct_meaningful_values(
+            semantic_rows,
+            ("Semantic Object Name", "Measure Name"),
+        ),
+        "source_lineage_rows": len(source_rows),
+        "distinct_source_objects": _agent_distinct_meaningful_values(
+            source_rows,
+            ("Fully Qualified Name", "Source Name"),
+        ),
+        "measure_lineage_rows": len(measure_rows),
+        "distinct_measures": _agent_distinct_meaningful_values(
+            measure_rows,
+            ("Measure Name", "Target Object Name"),
+        ),
+        "visual_field_rows": len(visual_rows),
+        "visual_metadata_reports": sum(
+            1 for row in coverage if row.get("available")
+        ),
+        "visual_reports_total": len(coverage),
+        "fabric_authorized": bool(index_result.get("fabric_authorized")),
+        "index_errors": len(index_result.get("errors") or []),
+        "reports": (index_result.get("reports") or [])[:50],
+    }
+
+
+_AGENT_SEARCH_RESULT_FIELDS = {
+    "reports": (
+        "Workspace Name",
+        "Report Name",
+        "Report ID",
+        "Dataset ID",
+        "Report Type",
+        "Report Format",
+    ),
+    "semantic_objects": (
+        "Agent Workspace Name",
+        "Agent Dataset ID",
+        "Agent Connected Reports",
+        "Semantic Workspace Name",
+        "Semantic Model Name",
+        "Semantic Table/View",
+        "Object Type",
+        "Semantic Object Name",
+        "Measure Name",
+        "Data Type",
+        "DAX Expression",
+        "Source Column Name From Model",
+    ),
+    "source_lineage": (
+        "Agent Workspace Name",
+        "Agent Dataset ID",
+        "Agent Connected Reports",
+        "Power BI Table Name",
+        "Source Server",
+        "Source Database",
+        "Source Schema",
+        "Source Name",
+        "Source Type",
+        "Fully Qualified Name",
+        "Native Query Columns",
+        "Query",
+    ),
+    "measure_lineage": (
+        "Agent Workspace Name",
+        "Agent Dataset ID",
+        "Agent Connected Reports",
+        "Target Object Type",
+        "Target Table/View",
+        "Target Object Name",
+        "Target Expression",
+        "Measure Name",
+        "Semantic Table/View",
+        "Semantic Object Name",
+        "Semantic Object Type",
+        "Dependency Expression",
+        "Exact Source Database",
+        "Exact Source Schema",
+        "Exact Source Table/View",
+        "Exact Source Column Name",
+        "Fully Qualified Source Object",
+    ),
+    "visual_usage": (
+        "Agent Workspace Name",
+        "Agent Report Name",
+        "Agent Report ID",
+        "Agent Dataset ID",
+        "Page Name",
+        "Page ID",
+        "Visual Name",
+        "Visual ID",
+        "Visualization Type",
+        "Table Name",
+        "Column / Measure Name",
+        "Field Role",
+        "Field Type",
+        "Query Reference",
+    ),
+}
+
+
+def _agent_search_row(row, query):
+    query_text = str(query or "").strip().casefold()
+    query_marker = normalize_identifier(query)
+    matched_fields = []
+    for field, value in (row or {}).items():
+        if isinstance(value, (dict, list, tuple, set)):
+            continue
+        text = str(value or "").strip()
+        if not text:
+            continue
+        normalized_value = normalize_identifier(text)
+        if query_text in text.casefold() or (
+            query_marker and query_marker in normalized_value
+        ):
+            matched_fields.append(str(field))
+    return matched_fields
+
+
+def _agent_compact_search_match(category, row, matched_fields):
+    compact = {"Matched Fields": "; ".join(matched_fields)}
+    for field in _AGENT_SEARCH_RESULT_FIELDS[category]:
+        value = row.get(field)
+        if not _is_meaningful_value(value):
+            continue
+        max_chars = 1800 if "Expression" in field or field in {"Query", "DAX Expression"} else 700
+        compact[field] = _trim_for_prompt(value, max_chars)
+    return compact
+
+
+def _search_claude_agent_estate(index_result, query, limit_per_category=20):
+    query = _agent_text_argument(query, "query", max_length=500)
+    limit = max(1, min(50, int(limit_per_category or 20)))
+    result = {
+        "query": query,
+        "overview": _agent_estate_overview(index_result),
+        "match_counts": {},
+    }
+    for category in (
+        "reports",
+        "semantic_objects",
+        "source_lineage",
+        "measure_lineage",
+        "visual_usage",
+    ):
+        matches = []
+        total_matches = 0
+        for row in index_result.get(category) or []:
+            matched_fields = _agent_search_row(row, query)
+            if not matched_fields:
+                continue
+            total_matches += 1
+            if len(matches) < limit:
+                matches.append(
+                    _agent_compact_search_match(
+                        category,
+                        row,
+                        matched_fields,
+                    )
+                )
+        result["match_counts"][category] = total_matches
+        result[category] = matches
+        if total_matches > limit:
+            result[f"{category}_truncated"] = True
+
+    result["visual_coverage"] = (index_result.get("visual_coverage") or [])[:50]
+    result["index_errors"] = (index_result.get("errors") or [])[:20]
+    return result
+
+
+def _build_claude_lineage_tool_executor(
+    records,
+    authorized_workspaces,
+    headersSPA,
+    headersSP,
+    xmla_token,
+):
+    scoped_records = _agent_scoped_records(records, authorized_workspaces)
+
+    def execute(tool_name, arguments):
+        arguments = arguments if isinstance(arguments, dict) else {}
+
+        if tool_name in {
+            "get_lineage_estate_overview",
+            "search_entire_lineage",
+        }:
+            estate_records = _agent_scoped_records(
+                scoped_records,
+                authorized_workspaces,
+                arguments.get("workspace_names"),
+            )
+            include_visuals = bool(arguments.get("include_visuals", True))
+            estate_index = _build_claude_agent_estate_index(
+                estate_records,
+                headersSPA,
+                headersSP,
+                xmla_token,
+                include_visuals=include_visuals,
+            )
+            if tool_name == "get_lineage_estate_overview":
+                return _agent_estate_overview(estate_index)
+            return _search_claude_agent_estate(
+                estate_index,
+                arguments.get("query"),
+                limit_per_category=arguments.get("limit_per_category") or 20,
+            )
+
+        if tool_name == "search_reports":
+            query = _agent_text_argument(arguments.get("query"), "query", max_length=300)
+            search_records = _agent_scoped_records(
+                scoped_records,
+                authorized_workspaces,
+                arguments.get("workspace_names"),
+            )
+            marker = query.casefold()
+            matches = [
+                record
+                for record in search_records
+                if marker
+                in " | ".join(
+                    str(record.get(field) or "")
+                    for field in (
+                        "Workspace Name",
+                        "Report Name",
+                        "Report ID",
+                        "Dataset ID",
+                    )
+                ).casefold()
+            ]
+            limit = max(1, min(25, int(arguments.get("limit") or 10)))
+            return {
+                "count": len(matches),
+                "returned": min(len(matches), limit),
+                "reports": [
+                    {
+                        "workspace_name": row.get("Workspace Name"),
+                        "workspace_id": row.get("Workspace ID"),
+                        "report_name": row.get("Report Name"),
+                        "report_id": row.get("Report ID"),
+                        "dataset_id": row.get("Dataset ID"),
+                        "report_type": row.get("Report Type"),
+                        "report_format": row.get("Report Format"),
+                    }
+                    for row in matches[:limit]
+                ],
+            }
+
+        if tool_name == "inspect_report_lineage":
+            record = _agent_find_report(
+                scoped_records,
+                arguments.get("report_id"),
+            )
+            lineage_type = str(arguments.get("lineage_type") or "").strip().casefold()
+            allowed_types = {
+                "summary",
+                "semantic_objects",
+                "source_lineage",
+                "measure_lineage",
+                "visual_usage",
+            }
+            if lineage_type not in allowed_types:
+                raise ValueError("Unsupported lineage_type.")
+
+            limit = max(1, min(100, int(arguments.get("limit") or 50)))
+            context = direct_report_context(record)
+            report_id = record.get("Report ID")
+            cache_prefix = f"claude_agent_{_safe_widget_key(report_id)}"
+            response = {
+                "report": {
+                    "workspace_name": record.get("Workspace Name"),
+                    "report_name": record.get("Report Name"),
+                    "report_id": report_id,
+                    "dataset_id": record.get("Dataset ID"),
+                },
+                "lineage_type": lineage_type,
+            }
+
+            if lineage_type in {"summary", "semantic_objects"}:
+                semantic_rows = _get_semantic_objects_for_contexts(
+                    [context],
+                    headersSPA,
+                    headersSP,
+                    xmla_token,
+                    cache_prefix,
+                )
+                if lineage_type == "semantic_objects":
+                    response.update(_agent_bounded_rows(semantic_rows, limit))
+                else:
+                    response["semantic_object_count"] = len(semantic_rows)
+
+            if lineage_type in {"summary", "source_lineage"}:
+                source_rows = _get_source_lineage_for_context(
+                    context,
+                    headersSPA,
+                    xmla_token,
+                    cache_prefix,
+                    auth_headers=[("MasterUser", headersSPA)],
+                )
+                if lineage_type == "source_lineage":
+                    response.update(_agent_bounded_rows(source_rows, limit))
+                else:
+                    response["source_object_count"] = len(source_rows)
+
+            if lineage_type in {"summary", "measure_lineage"}:
+                measure_rows = _get_measure_lineage_rows_for_contexts(
+                    [context],
+                    headersSPA,
+                    xmla_token,
+                    cache_prefix,
+                )
+                if lineage_type == "measure_lineage":
+                    response.update(_agent_bounded_rows(measure_rows, limit))
+                else:
+                    response["measure_lineage_row_count"] = len(measure_rows)
+
+            if lineage_type in {"summary", "visual_usage"}:
+                visual_rows = _table_impact_cached_layout_records(context)
+                if lineage_type == "visual_usage":
+                    response.update(_agent_bounded_rows(visual_rows, limit))
+                    if not visual_rows:
+                        response["evidence_gap"] = (
+                            "No cached report-definition visual metadata is available. "
+                            "Open Visual Details for this report before asking for visual usage."
+                        )
+                else:
+                    response["cached_visual_field_count"] = len(visual_rows)
+                    response["visual_confirmation_available"] = bool(visual_rows)
+            return response
+
+        if tool_name == "analyze_measure_impact":
+            measure_name = _agent_text_argument(
+                arguments.get("measure_name"),
+                "measure_name",
+                max_length=300,
+            )
+            impact_records = _agent_scoped_records(
+                scoped_records,
+                authorized_workspaces,
+                arguments.get("workspace_names"),
+            )
+            result = _build_measure_impact_analysis(
+                impact_records,
+                measure_name,
+                bool(arguments.get("include_partial", False)),
+                headersSPA,
+                headersSP,
+                xmla_token,
+                fabric_headers=_fabric_headers_from_session(),
+            )
+            return _agent_bounded_analysis(result)
+
+        if tool_name == "analyze_table_impact":
+            table_name = _agent_text_argument(
+                arguments.get("table_name"),
+                "table_name",
+                max_length=500,
+            )
+            impact_records = _agent_scoped_records(
+                scoped_records,
+                authorized_workspaces,
+                arguments.get("workspace_names"),
+            )
+            result = _build_table_impact_analysis(
+                impact_records,
+                table_name,
+                bool(arguments.get("include_partial", False)),
+                headersSPA,
+                xmla_token,
+                fabric_headers=_fabric_headers_from_session(),
+            )
+            return _agent_bounded_analysis(result)
+
+        if tool_name == "trace_snowflake_lineage":
+            settings = _get_snowflake_lineage_settings()
+            if not settings.get("enabled", False):
+                raise RuntimeError("Snowflake lineage is not enabled.")
+
+            object_name = _agent_text_argument(
+                arguments.get("object_name"),
+                "object_name",
+                max_length=500,
+            )
+            object_type = str(arguments.get("object_type") or "").strip().upper()
+            allowed_types = {"TABLE", "VIEW", "DYNAMIC TABLE", "COLUMN"}
+            if object_type not in allowed_types:
+                raise ValueError("Unsupported Snowflake object_type.")
+
+            direction = str(
+                arguments.get("direction") or settings.get("direction") or "UPSTREAM"
+            ).strip().upper()
+            if direction not in {"UPSTREAM", "DOWNSTREAM"}:
+                raise ValueError("direction must be UPSTREAM or DOWNSTREAM.")
+
+            configured_depth = max(1, min(20, int(settings.get("max_depth") or 20)))
+            requested_depth = max(
+                1,
+                min(configured_depth, int(arguments.get("max_depth") or configured_depth)),
+            )
+            settings = dict(settings)
+            settings["direction"] = direction
+            settings["max_depth"] = requested_depth
+
+            column_name = str(arguments.get("column_name") or "").strip()
+            if object_type == "COLUMN" or column_name:
+                column_name = _agent_text_argument(
+                    column_name,
+                    "column_name",
+                    max_length=300,
+                )
+                rows = get_snowflake_column_lineage(
+                    object_name,
+                    column_name,
+                    settings,
+                )
+            else:
+                rows = get_recursive_snowflake_lineage(
+                    object_name,
+                    object_type,
+                    settings,
+                )
+            return {
+                "object_name": object_name,
+                "object_type": object_type,
+                "column_name": column_name,
+                "direction": direction,
+                "max_depth": requested_depth,
+                **_agent_bounded_rows(rows, 100),
+            }
+
+        raise ValueError(f"Claude requested an unknown tool: {tool_name}")
+
+    return execute
+
+
+def _prepare_claude_agent_shared_evidence(tool_executor, selected_workspaces):
+    """Build the authorized estate index once for a multi-agent investigation."""
+    started = time.perf_counter()
+    try:
+        overview = tool_executor(
+            "get_lineage_estate_overview",
+            {
+                "workspace_names": list(selected_workspaces or []),
+                "include_visuals": True,
+            },
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        return (
+            {"estate_overview": overview},
+            {
+                "agent": "Shared evidence cache",
+                "tool": "build_estate_index",
+                "status": "completed",
+                "duration_ms": elapsed_ms,
+                "input": {"workspace_names": list(selected_workspaces or [])},
+                "summary": "Built or reused the authorized estate index",
+            },
+        )
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        return (
+            {"estate_overview_error": str(exc)[:1000]},
+            {
+                "agent": "Shared evidence cache",
+                "tool": "build_estate_index",
+                "status": "error",
+                "duration_ms": elapsed_ms,
+                "input": {"workspace_names": list(selected_workspaces or [])},
+                "summary": str(exc)[:1000],
+            },
+        )
+
+
+def _render_claude_agent_trace(trace, usage=None, orchestration=None):
+    if orchestration:
+        selected_agents = orchestration.get("selected_agents") or []
+        st.caption(
+            f"Strategy: {str(orchestration.get('mode') or 'single').title()} | "
+            f"Agents: {', '.join(selected_agents) or 'general_lineage'}"
+        )
+        if orchestration.get("skipped"):
+            st.info(
+                "Budget or availability guard: "
+                + "; ".join(str(item) for item in orchestration["skipped"])
+            )
+    if trace:
+        trace_rows = [
+            {
+                "Agent": item.get("agent") or "General lineage agent",
+                "Round": item.get("round"),
+                "Tool": item.get("tool"),
+                "Status": item.get("status"),
+                "Duration_ms": item.get("duration_ms"),
+                "Summary": item.get("summary"),
+                "Input": json.dumps(item.get("input") or {}, ensure_ascii=False),
+            }
+            for item in trace
+        ]
+        with st.expander("Evidence activity", expanded=False):
+            st.dataframe(pd.DataFrame(trace_rows), use_container_width=True, hide_index=True)
+    if usage:
+        st.caption(
+            f"Claude tokens: {int(usage.get('input_tokens') or 0):,} input, "
+            f"{int(usage.get('output_tokens') or 0):,} output"
+        )
+
+
+def _claude_agent_prompt_suggestions(records, selected_workspaces):
+    """Return prompt starters based only on the visible workspace/report inventory."""
+    scoped_records = _agent_scoped_records(records, selected_workspaces)
+    suggestions = []
+    seen = set()
+
+    def add(prompt):
+        marker = str(prompt).strip().casefold()
+        if marker and marker not in seen:
+            seen.add(marker)
+            suggestions.append(str(prompt).strip())
+
+    workspace_names = sorted(
+        {
+            str(record.get("Workspace Name") or "").strip()
+            for record in scoped_records
+            if str(record.get("Workspace Name") or "").strip()
+        },
+        key=str.casefold,
+    )
+    if workspace_names:
+        add(
+            "Summarize the reports, semantic models, and lineage available in "
+            f"workspace {workspace_names[0]}."
+        )
+
+    for record in scoped_records:
+        report_name = str(record.get("Report Name") or "").strip()
+        workspace_name = str(record.get("Workspace Name") or "").strip()
+        if not report_name or not workspace_name:
+            continue
+        add(f"Explain the lineage for report {report_name} in workspace {workspace_name}.")
+        add(
+            f"What tables, measures, and source objects are used by report {report_name}?"
+        )
+        if len(suggestions) >= 3:
+            break
+
+    return suggestions[:3] or ["Summarize the lineage available in my selected workspace scope."]
+
+
+def _claude_home_featured_reports(records, selected_workspaces):
+    """Choose two visible reports once per inventory state for the Home view."""
+    scoped_records = _agent_scoped_records(records, selected_workspaces)
+    available = [
+        record
+        for record in scoped_records
+        if str(record.get("Report ID") or "").strip()
+    ]
+    signature = hashlib.sha256(
+        json.dumps(
+            sorted(
+                [
+                    (
+                        str(record.get("Workspace ID") or ""),
+                        str(record.get("Report ID") or ""),
+                    )
+                    for record in available
+                ]
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    state_key = "claude_home_featured_reports_v1"
+    cached = st.session_state.get(state_key)
+    cached_ids = cached.get("report_ids") if isinstance(cached, dict) else None
+    if isinstance(cached_ids, list) and cached.get("signature") == signature:
+        selected_ids = set(cached_ids)
+        featured = [
+            record
+            for record in available
+            if str(record.get("Report ID") or "") in selected_ids
+        ]
+        if len(featured) == min(2, len(available)):
+            return featured
+
+    featured = secrets.SystemRandom().sample(available, k=min(2, len(available)))
+    st.session_state[state_key] = {
+        "signature": signature,
+        "report_ids": [str(record.get("Report ID") or "") for record in featured],
+    }
+    return featured
+
+
+def render_claude_lineage_agent_page(
+    headersSPA,
+    headersSP,
+    *,
+    get_workspace_inventory,
+    get_artifacts,
+    logout_and_clear_session,
+    clear_streamlit_session_state,
+):
+    """Render the signed-in, read-only Claude Lineage Agent."""
+    render_app_top_bar(
+        logout_and_clear_session,
+        clear_streamlit_session_state,
+        "Claude Agent",
+    )
+    settings = _get_claude_settings()
+    try:
+        resolved_settings = resolve_claude_settings(settings)
+        configuration_error = None
+    except (ClaudeConfigurationError, ValueError) as exc:
+        resolved_settings = None
+        configuration_error = str(exc)
+
+    with st.spinner("Loading authorized report inventory..."):
+        inventory = get_accessible_inventory(
+            headersSP,
+            get_workspace_inventory,
+            get_artifacts,
+        )
+    records = inventory.get("reports") or []
+    workspace_options = sorted(
+        {
+            str(record.get("Workspace Name"))
+            for record in records
+            if record.get("Workspace Name")
+        },
+        key=str.casefold,
+    )
+
+    dataset_count = len(
+        {
+            str(record.get("Dataset ID") or "").strip()
+            for record in records
+            if str(record.get("Dataset ID") or "").strip()
+        }
+    )
+    st.markdown(
+        """
+        <div class="home-hero">
+            <div class="page-eyebrow">Home</div>
+            <h1>What would you like to explore?</h1>
+            <p>Ask Claude about reports, semantic models, measures, sources, visual evidence, and downstream impact.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Workspaces", len(workspace_options))
+    metric_columns[1].metric("Reports", len(records))
+    metric_columns[2].metric("Semantic models", dataset_count)
+
+    strategy_options = {
+        "Auto (recommended)": "auto",
+        "Single agent": "single",
+        "Multi-agent": "multi",
+    }
+    configured_strategy = (
+        resolved_settings.get("orchestration_mode", "auto")
+        if resolved_settings
+        else "auto"
+    )
+    strategy_labels = list(strategy_options)
+    default_strategy_index = list(strategy_options.values()).index(
+        configured_strategy
+        if configured_strategy in strategy_options.values()
+        else "auto"
+    )
+    with st.expander("Analysis settings", expanded=False):
+        control_col, strategy_col, refresh_col, clear_col = st.columns(
+            [3, 1, 1, 1],
+            vertical_alignment="bottom",
+        )
+        with control_col:
+            selected_workspaces = st.multiselect(
+                "Authorized workspace scope",
+                options=workspace_options,
+                default=workspace_options,
+                key="claude_agent_workspace_scope",
+            )
+        with strategy_col:
+            selected_strategy_label = st.selectbox(
+                "Agent strategy",
+                options=strategy_labels,
+                index=default_strategy_index,
+                key="claude_agent_strategy",
+                disabled=bool(configuration_error),
+            )
+        with refresh_col:
+            if st.button(
+                "Refresh inventory",
+                icon=":material/refresh:",
+                use_container_width=True,
+            ):
+                st.session_state.pop("accessible_lineage_inventory_v3", None)
+                st.session_state.pop("direct_lookup_report_records_v2", None)
+                st.session_state.pop("claude_home_featured_reports_v1", None)
+                _clear_claude_agent_estate_indexes()
+                st.rerun()
+        with clear_col:
+            if st.button(
+                "Clear chat",
+                icon=":material/delete_sweep:",
+                use_container_width=True,
+            ):
+                st.session_state.pop("claude_agent_messages_v1", None)
+                st.session_state.pop("claude_agent_prompt_draft", None)
+                st.rerun()
+    selected_workspaces = list(
+        st.session_state.get("claude_agent_workspace_scope") or workspace_options
+    )
+    selected_strategy = strategy_options.get(
+        str(
+            st.session_state.get("claude_agent_strategy")
+            or strategy_labels[default_strategy_index]
+        ),
+        "auto",
+    )
+
+    if configuration_error:
+        st.warning(configuration_error)
+        st.code(
+            '[claude]\n'
+            'enabled = true\n'
+            'api_key = "<anthropic-api-key>"\n'
+            'model = "claude-sonnet-4-6"'
+        )
+        return
+    if not selected_workspaces:
+        st.info("Select at least one workspace.")
+        return
+
+    st.caption(
+        f"Model: {resolved_settings['model']} | "
+        f"Authorized reports: {len(_agent_scoped_records(records, selected_workspaces))} | "
+        f"Strategy: {selected_strategy.title()} | "
+        f"Runtime: {str(resolved_settings['agent_runtime']).title()}"
+    )
+
+    def set_prompt_suggestion(value):
+        st.session_state["claude_agent_prompt_draft"] = value
+
+    with st.form("claude_agent_prompt_form", clear_on_submit=False):
+        submitted_prompt = st.text_area(
+            "Ask Claude about your lineage",
+            placeholder="For example: Trace a table from Snowflake through a semantic model to the reports that use it.",
+            height=104,
+            key="claude_agent_prompt_draft",
+            label_visibility="collapsed",
+        )
+        submit_prompt = st.form_submit_button(
+            "Ask Claude",
+            type="primary",
+            use_container_width=True,
+        )
+
+    st.caption("Suggested questions from your accessible inventory")
+    suggestion_columns = st.columns(3)
+    for index, (column, suggestion) in enumerate(
+        zip(
+            suggestion_columns,
+            _claude_agent_prompt_suggestions(records, selected_workspaces),
+        )
+    ):
+        with column:
+            st.button(
+                suggestion,
+                key=f"claude_agent_suggestion_{index}",
+                use_container_width=True,
+                on_click=set_prompt_suggestion,
+                args=(suggestion,),
+            )
+
+    featured_prompt = None
+    featured_reports = _claude_home_featured_reports(records, selected_workspaces)
+    if featured_reports:
+        st.markdown("### Reports to explore")
+        featured_columns = st.columns(2)
+        for column, record in zip(featured_columns, featured_reports):
+            report_name = str(record.get("Report Name") or "Unnamed report").strip()
+            workspace_name = str(record.get("Workspace Name") or "Unknown workspace").strip()
+            dataset_id = str(record.get("Dataset ID") or "No semantic model ID").strip()
+            with column:
+                with st.container(border=True):
+                    st.caption(workspace_name)
+                    st.markdown(f"**{report_name}**")
+                    st.caption(f"Semantic model: {dataset_id}")
+                    if st.button(
+                        "Analyze with Claude",
+                        key=(
+                            "claude_home_featured_"
+                            f"{_safe_widget_key(record.get('Workspace ID'))}_"
+                            f"{_safe_widget_key(record.get('Report ID'))}"
+                        ),
+                        use_container_width=True,
+                    ):
+                        featured_prompt = (
+                            f"Analyze the lineage for report {report_name} in workspace "
+                            f"{workspace_name}. Include its semantic model, measures, "
+                            "source objects, and available visual evidence."
+                        )
+
+    messages_key = "claude_agent_messages_v1"
+    messages = list(st.session_state.get(messages_key) or [])
+    for message in messages:
+        role = str(message.get("role") or "assistant")
+        with st.chat_message(role):
+            st.markdown(str(message.get("content") or ""))
+            if role == "assistant":
+                _render_claude_agent_trace(
+                    message.get("trace") or [],
+                    message.get("usage") or {},
+                    message.get("orchestration") or {},
+                )
+
+    prompt = (
+        str(submitted_prompt or "").strip()
+        if submit_prompt
+        else featured_prompt
+    )
+    if not prompt:
+        return
+
+    user_message = {"role": "user", "content": str(prompt).strip()}
+    messages.append(user_message)
+    st.session_state[messages_key] = messages
+    with st.chat_message("user"):
+        st.markdown(user_message["content"])
+
+    scoped_records = _agent_scoped_records(records, selected_workspaces)
+    tool_executor = _build_claude_lineage_tool_executor(
+        scoped_records,
+        selected_workspaces,
+        headersSPA,
+        headersSP,
+        st.session_state.auth_bundle["spa"],
+    )
+    snowflake_settings = _get_snowflake_lineage_settings()
+    tools = lineage_agent_tool_definitions(
+        max_snowflake_depth=int(snowflake_settings.get("max_depth") or 20)
+    )
+    request_settings = dict(settings)
+    request_settings["orchestration_mode"] = selected_strategy
+    system_context = (
+        "The signed-in user authorized this turn for these workspace names only: "
+        f"{', '.join(selected_workspaces)}. The server will reject any tool request "
+        "outside this scope. For broad questions, unknown entities, and requests to "
+        "search the app, call search_entire_lineage before answering. For complete "
+        "estate summaries, call get_lineage_estate_overview. The comprehensive index "
+        "covers reports, semantic objects, physical source lineage, measure lineage, "
+        "and available visual metadata. Visual usage is confirmed only when cached or "
+        "retrieved report-definition evidence is returned."
+    )
+    route = plan_claude_agent_route(user_message["content"], request_settings)
+    managed_configuration_error = None
+    if resolved_settings["agent_runtime"] == "managed":
+        required_roles = (
+            ["general_lineage"]
+            if route.get("mode") == "single"
+            else list(route.get("specialists") or []) + ["coordinator"]
+        )
+        if (
+            len(route.get("specialists") or []) >= 2
+            and int(resolved_settings["max_agent_calls"])
+            >= len(route.get("specialists") or []) + 2
+        ):
+            required_roles.append("evidence_reviewer")
+        managed_status = managed_agent_configuration_status(
+            request_settings,
+            required_roles,
+        )
+        if not managed_status["ready"]:
+            missing = []
+            if not managed_status["enabled"]:
+                missing.append("claude.managed_agents.enabled = true")
+            if not managed_status["environment_configured"]:
+                missing.append("claude.managed_agents.environment_id")
+            missing.extend(
+                f"claude.managed_agents.{role}_agent_id"
+                for role in managed_status["missing_roles"]
+            )
+            managed_configuration_error = (
+                "Managed Claude runtime is selected but configuration is incomplete: "
+                + ", ".join(missing)
+            )
+    shared_evidence = None
+    shared_evidence_trace = None
+
+    with st.chat_message("assistant"):
+        spinner_placeholder = st.empty()
+        try:
+            if managed_configuration_error:
+                raise ClaudeConfigurationError(managed_configuration_error)
+            spinner_text = (
+                "Claude specialists are sharing lineage evidence..."
+                if route.get("mode") == "multi"
+                else "Claude is investigating lineage evidence..."
+            )
+            with spinner_placeholder.container():
+                with st.spinner(spinner_text):
+                    if route.get("mode") == "multi":
+                        (
+                            shared_evidence,
+                            shared_evidence_trace,
+                        ) = _prepare_claude_agent_shared_evidence(
+                            tool_executor,
+                            selected_workspaces,
+                        )
+                    result = run_claude_orchestrated_agent(
+                        messages,
+                        request_settings,
+                        tool_executor,
+                        tools=tools,
+                        system_context=system_context,
+                        shared_evidence=shared_evidence,
+                        route=route,
+                    )
+            spinner_placeholder.empty()
+            if shared_evidence_trace:
+                result["trace"] = [shared_evidence_trace] + list(
+                    result.get("trace") or []
+                )
+            assistant_message = {
+                "role": "assistant",
+                "content": result["text"],
+                "trace": result.get("trace") or [],
+                "usage": result.get("usage") or {},
+                "orchestration": result.get("orchestration") or {},
+            }
+            st.markdown(assistant_message["content"])
+            _render_claude_agent_trace(
+                assistant_message["trace"],
+                assistant_message["usage"],
+                assistant_message["orchestration"],
+            )
+        except (ClaudeAgentError, ClaudeConfigurationError) as exc:
+            spinner_placeholder.empty()
+            assistant_message = {
+                "role": "assistant",
+                "content": f"Claude could not complete this request: {exc}",
+                "trace": [],
+                "usage": {},
+                "orchestration": {},
+            }
+            st.error(assistant_message["content"])
+        except Exception as exc:
+            spinner_placeholder.empty()
+            assistant_message = {
+                "role": "assistant",
+                "content": (
+                    "Claude could not complete this request because the local lineage "
+                    f"tool failed with {type(exc).__name__}. Review the server log."
+                ),
+                "trace": [],
+                "usage": {},
+                "orchestration": {},
+            }
+            st.error(assistant_message["content"])
+
+    messages.append(assistant_message)
+    st.session_state[messages_key] = messages[-24:]
+
+
 def _safe_widget_key(value):
     """Create a stable Streamlit widget key fragment from an arbitrary file/report name."""
     return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "value"))[:120]
@@ -10745,7 +12014,7 @@ if not st.session_state.auth_bundle:
     if restored_auth_bundle:
         st.session_state.auth_bundle = restored_auth_bundle
 if 'workflow_mode' not in st.session_state:
-    st.session_state.workflow_mode = "landing"
+    st.session_state.workflow_mode = "claude_agent"
 
 
 # --- APP ROUTING ---
@@ -10757,23 +12026,24 @@ headersMU = {'Authorization': f"Bearer {st.session_state.auth_bundle['mu']}", 'C
 headersSP = headersMU
 headersSPA = headersMU
 
-workflow_mode = st.session_state.get("workflow_mode", "landing")
+workflow_mode = st.session_state.get("workflow_mode", "claude_agent")
 if workflow_mode == "direct_measure":
     workflow_mode = "report_lineage"
     st.session_state.workflow_mode = workflow_mode
-if workflow_mode not in {"landing", "guided", "report_lineage", "table_impact", "measure_impact"}:
-    workflow_mode = "landing"
+if workflow_mode not in {
+    "landing",
+    "guided",
+    "report_lineage",
+    "table_impact",
+    "measure_impact",
+    "claude_agent",
+}:
+    workflow_mode = "claude_agent"
     st.session_state.workflow_mode = workflow_mode
 
 if workflow_mode == "landing":
-    render_workflow_choice_page(
-        headersSP,
-        get_workspace_inventory=get_workspace_inventory,
-        get_artifacts=get_artifacts,
-        logout_and_clear_session=logout_and_clear_session,
-        clear_streamlit_session_state=clear_streamlit_session_state,
-    )
-    st.stop()
+    st.session_state.workflow_mode = "claude_agent"
+    workflow_mode = "claude_agent"
 
 if workflow_mode == "report_lineage":
     render_direct_measure_lookup_page(
@@ -10817,6 +12087,17 @@ if workflow_mode == "measure_impact":
     )
     st.stop()
 
+if workflow_mode == "claude_agent":
+    render_claude_lineage_agent_page(
+        headersSPA,
+        headersSP,
+        get_workspace_inventory=get_workspace_inventory,
+        get_artifacts=get_artifacts,
+        logout_and_clear_session=logout_and_clear_session,
+        clear_streamlit_session_state=clear_streamlit_session_state,
+    )
+    st.stop()
+
 st.session_state.workflow_mode = "guided"
 
 
@@ -10852,11 +12133,11 @@ if st.session_state.auth_bundle:
         # WORKSPACE VIEW - TAB-FIRST LAYOUT
         # ==========================================
         if st.session_state.view_mode == "workspace":
-            if 'workspaces_list' not in st.session_state:
+            if 'workspaces_list_v2' not in st.session_state:
                 with st.spinner("Fetching Workspaces..."):
-                    st.session_state.workspaces_list = get_workspace_inventory(headersSP)
-            
-            workspaces = st.session_state.workspaces_list
+                    st.session_state.workspaces_list_v2 = get_workspace_inventory(headersSP)
+
+            workspaces = st.session_state.workspaces_list_v2
             selected_ws_names = []
             all_reports_data = []
             all_dashboards_data = []

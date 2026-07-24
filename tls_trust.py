@@ -25,6 +25,8 @@ def configure_tls_trust():
         bundle_path = _resolved_bundle_path(configured_bundle)
         if pbi_bundle:
             os.environ["REQUESTS_CA_BUNDLE"] = str(bundle_path)
+        # HTTPX-based SDKs, including the Anthropic client, honor SSL_CERT_FILE.
+        os.environ.setdefault("SSL_CERT_FILE", str(bundle_path))
         if not bundle_path.is_file():
             return {
                 "mode": "invalid_ca_bundle",

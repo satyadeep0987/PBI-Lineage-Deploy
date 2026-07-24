@@ -4,6 +4,20 @@ import time
 import streamlit as st
 
 
+_EXCLUDED_WORKSPACE_NAMES = frozenset({"admin monitoring"})
+
+
+def filter_excluded_workspaces(workspaces):
+    """Remove workspaces excluded from this application's lineage inventory."""
+    return [
+        workspace
+        for workspace in workspaces or []
+        if isinstance(workspace, dict)
+        and str(workspace.get("name") or "").strip().casefold()
+        not in _EXCLUDED_WORKSPACE_NAMES
+    ]
+
+
 def _render_pending_device_flow(get_all_tokens):
     """Render the follow-up step for Microsoft device-code sign-in."""
     flow = st.session_state.get("msal_device_flow")
@@ -27,7 +41,7 @@ def _render_pending_device_flow(get_all_tokens):
                 result = get_all_tokens(prompt_behavior="none")
                 if result:
                     st.session_state.auth_bundle = result
-                    st.session_state.workflow_mode = "landing"
+                    st.session_state.workflow_mode = "claude_agent"
                     st.rerun()
     with restart_col:
         if st.button("Restart sign-in", use_container_width=True):
@@ -88,13 +102,14 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
     """Render persistent authenticated navigation in the left sidebar."""
     normalized_mode = str(mode_label or "").strip().casefold()
     destination_aliases = {
-        "home": "home",
+        "home": "claude_agent",
         "guided workflow": "explore",
         "explore": "explore",
         "direct measure lookup": "report_lineage",
         "report lineage": "report_lineage",
         "table impact": "table_impact",
         "measure impact": "measure_impact",
+        "claude agent": "claude_agent",
     }
     active_destination = destination_aliases.get(normalized_mode, "explore")
 
@@ -117,11 +132,11 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
         if st.button(
             "Home",
             key="top_home",
-            type="primary" if active_destination == "home" else "tertiary",
+            type="primary" if active_destination == "claude_agent" else "tertiary",
             icon=":material/home:",
             use_container_width=True,
         ):
-            _set_workflow("landing")
+            _set_workflow("claude_agent")
 
         if st.button(
             "Explore",
@@ -232,7 +247,7 @@ def render_login_page(clear_streamlit_session_state, get_all_tokens):
                         result = get_all_tokens(prompt_behavior="select_account")
                         if result:
                             st.session_state.auth_bundle = result
-                            st.session_state.workflow_mode = "landing"
+                            st.session_state.workflow_mode = "claude_agent"
                             st.rerun()
 
 
@@ -276,13 +291,13 @@ def _report_card(record, badge="Report"):
 
 
 def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
-    """Load and cache workspaces and reports used by the home and measure views."""
-    cache_key = "accessible_lineage_inventory_v2"
+    """Load the allowed workspace/report inventory used throughout the application."""
+    cache_key = "accessible_lineage_inventory_v3"
     cached = st.session_state.get(cache_key)
     if isinstance(cached, dict):
         return cached
 
-    workspaces = list(get_workspace_inventory(headers) or [])
+    workspaces = filter_excluded_workspaces(get_workspace_inventory(headers) or [])
     reports = []
     for workspace in workspaces:
         workspace_id = workspace.get("id")
@@ -307,7 +322,7 @@ def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
     ))
     inventory = {"workspaces": workspaces, "reports": reports}
     st.session_state[cache_key] = inventory
-    st.session_state["direct_lookup_report_records_v1"] = reports
+    st.session_state["direct_lookup_report_records_v2"] = reports
     return inventory
 
 
@@ -362,8 +377,8 @@ def render_workflow_choice_page(
         st.markdown('<div class="section-heading"><strong>Quick actions</strong><span>Start with the task you need.</span></div>', unsafe_allow_html=True)
     with refresh_col:
         if st.button("Refresh inventory", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v2", None)
-            st.session_state.pop("direct_lookup_report_records_v1", None)
+            st.session_state.pop("accessible_lineage_inventory_v3", None)
+            st.session_state.pop("direct_lookup_report_records_v2", None)
             st.session_state.pop("table_impact_analysis_result", None)
             st.session_state.pop("measure_impact_analysis_result", None)
             st.rerun()
@@ -435,7 +450,7 @@ def direct_lookup_report_label(record):
 
 def get_direct_lookup_report_records(headers, get_workspace_inventory, get_artifacts):
     """Return report records visible through the signed-in user's workspaces."""
-    cache_key = "direct_lookup_report_records_v1"
+    cache_key = "direct_lookup_report_records_v2"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
     records = get_accessible_inventory(headers, get_workspace_inventory, get_artifacts).get("reports") or []
@@ -492,8 +507,8 @@ def render_direct_measure_lookup_page(
     refresh_col, _ = st.columns([1, 4])
     with refresh_col:
         if st.button("Refresh reports", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v2", None)
-            st.session_state.pop("direct_lookup_report_records_v1", None)
+            st.session_state.pop("accessible_lineage_inventory_v3", None)
+            st.session_state.pop("direct_lookup_report_records_v2", None)
             st.session_state.pop("direct_measure_active_context", None)
             st.rerun()
 
@@ -640,8 +655,8 @@ def _render_impact_page(
     refresh_col, _ = st.columns([1, 4])
     with refresh_col:
         if st.button("Refresh inventory", key=f"refresh_{title.casefold().replace(' ', '_')}", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v2", None)
-            st.session_state.pop("direct_lookup_report_records_v1", None)
+            st.session_state.pop("accessible_lineage_inventory_v3", None)
+            st.session_state.pop("direct_lookup_report_records_v2", None)
             st.session_state.pop("table_impact_analysis_result", None)
             st.session_state.pop("measure_impact_analysis_result", None)
             st.rerun()
