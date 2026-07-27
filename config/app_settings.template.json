@@ -72,7 +72,8 @@
     "schema": "",
     "direction": "UPSTREAM",
     "default_object_domain": "VIEW",
-    "column_lineage_procedure": "COMMON_DB.COMMON_SCHEMA.TRACE_COLUMN_LINEAGE",
+    "column_lineage_procedure": "SALES_ANALYTICS.REPORTING.TRACE_COLUMN_LINEAGE",
+    "column_lineage_max_depth": 50,
     "max_depth": 20,
     "statement_timeout_seconds": 120
   }

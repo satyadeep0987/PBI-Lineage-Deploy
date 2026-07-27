@@ -266,6 +266,18 @@ class ClaudeAgentLoopTests(unittest.TestCase):
         )
         self.assertFalse(any("delete" in name or "write" in name for name in names))
 
+    def test_column_lineage_tool_can_request_the_recursive_procedure_depth(self):
+        trace_tool = next(
+            tool
+            for tool in lineage_agent_tool_definitions(max_snowflake_depth=50)
+            if tool["name"] == "trace_snowflake_lineage"
+        )
+
+        self.assertEqual(
+            trace_tool["input_schema"]["properties"]["max_depth"]["maximum"],
+            50,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

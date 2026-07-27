@@ -478,7 +478,7 @@ def generate_claude_response(
 
 def lineage_agent_tool_definitions(max_snowflake_depth: int = 20) -> List[Dict[str, Any]]:
     """Return the read-only tools Claude may request."""
-    max_depth = max(1, min(20, int(max_snowflake_depth or 20)))
+    max_depth = max(1, min(50, int(max_snowflake_depth or 20)))
     workspace_array = {
         "type": "array",
         "items": {"type": "string"},
