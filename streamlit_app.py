@@ -13,6 +13,7 @@ import requests
 import pandas as pd
 from utils import Utils
 import base64
+import difflib
 import re
 import zipfile
 import io
@@ -48,6 +49,7 @@ from pbi_modules.claude_agent import (
     lineage_agent_tool_definitions,
     managed_agent_configuration_status,
     plan_claude_agent_route,
+    question_requests_lineage_diagram,
     question_requests_visual_details,
     resolve_claude_settings,
     run_claude_orchestrated_agent,
@@ -5348,6 +5350,457 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                 pass
 
 
+def _relationship_value(value, default="N/A"):
+    """Return a compact display value for XMLA relationship properties."""
+    text = str(value or "").strip()
+    return text if text else default
+
+
+def get_semantic_model_relationships(
+    headersSPA,
+    headersSP,
+    workspace_id,
+    dataset_id,
+    access_token,
+    workspace_name_hint=None,
+    dataset_name_hint=None,
+    auth_headers=None,
+):
+    """Return visible semantic-model relationships through read-only XMLA DMVs.
+
+    Relationship schemas vary slightly by capacity and compatibility level, so the
+    query uses progressively smaller projections. The result intentionally
+    contains only model metadata; it never reads fact data.
+    """
+    relationships = []
+    if not workspace_id or not dataset_id or not access_token:
+        return relationships
+
+    workspace_name = "N/A"
+    dataset_name = "N/A"
+    conn, cursor = None, None
+    try:
+        workspace_name, dataset_name = resolve_names_for_xmla(
+            headersSPA,
+            workspace_id,
+            dataset_id,
+            workspace_name_hint=workspace_name_hint,
+            dataset_name_hint=dataset_name_hint,
+            auth_headers=auth_headers,
+        )
+        catalog_candidates = _unique_meaningful_values(
+            [dataset_name, dataset_name_hint, dataset_id]
+        )
+        for catalog_name in catalog_candidates:
+            conn, cursor = get_xmla_cursor(workspace_name, catalog_name, access_token)
+            if cursor:
+                dataset_name = catalog_name
+                break
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+
+        if not cursor:
+            return relationships
+
+        table_rows = execute_xmla_query(
+            cursor,
+            """
+            SELECT [ID], [Name]
+            FROM $SYSTEM.TMSCHEMA_TABLES
+            """,
+        ) or []
+        table_map = {
+            item.get("ID"): item.get("Name")
+            for item in (_row_to_dict(row, ["ID", "Name"]) for row in table_rows)
+            if item.get("ID") is not None and item.get("Name")
+        }
+
+        column_query_attempts = [
+            (
+                ["ID", "TableID", "ExplicitName", "InferredName", "Name"],
+                """
+                SELECT [ID], [TableID], [ExplicitName], [InferredName], [Name]
+                FROM $SYSTEM.TMSCHEMA_COLUMNS
+                """,
+            ),
+            (
+                ["ID", "TableID", "ExplicitName", "InferredName"],
+                """
+                SELECT [ID], [TableID], [ExplicitName], [InferredName]
+                FROM $SYSTEM.TMSCHEMA_COLUMNS
+                """,
+            ),
+            (
+                ["ID", "TableID", "Name"],
+                """
+                SELECT [ID], [TableID], [Name]
+                FROM $SYSTEM.TMSCHEMA_COLUMNS
+                """,
+            ),
+        ]
+        column_map = {}
+        for column_headers, column_query in column_query_attempts:
+            column_rows = execute_xmla_query(cursor, column_query)
+            if column_rows is None:
+                continue
+            for row in column_rows:
+                item = _row_to_dict(row, column_headers)
+                column_id = item.get("ID")
+                if column_id is not None:
+                    column_map[column_id] = _prefer_non_na(
+                        item.get("ExplicitName"),
+                        item.get("InferredName"),
+                        item.get("Name"),
+                    )
+            break
+
+        relationship_query_attempts = [
+            (
+                [
+                    "ID", "FromTableID", "FromColumnID", "ToTableID", "ToColumnID",
+                    "IsActive", "CrossFilteringBehavior", "FromCardinality", "ToCardinality",
+                ],
+                """
+                SELECT [ID], [FromTableID], [FromColumnID], [ToTableID], [ToColumnID],
+                       [IsActive], [CrossFilteringBehavior], [FromCardinality], [ToCardinality]
+                FROM $SYSTEM.TMSCHEMA_RELATIONSHIPS
+                """,
+            ),
+            (
+                [
+                    "ID", "FromTableID", "FromColumnID", "ToTableID", "ToColumnID",
+                    "IsActive", "CrossFilteringBehavior",
+                ],
+                """
+                SELECT [ID], [FromTableID], [FromColumnID], [ToTableID], [ToColumnID],
+                       [IsActive], [CrossFilteringBehavior]
+                FROM $SYSTEM.TMSCHEMA_RELATIONSHIPS
+                """,
+            ),
+            (
+                ["ID", "FromTableID", "FromColumnID", "ToTableID", "ToColumnID", "IsActive"],
+                """
+                SELECT [ID], [FromTableID], [FromColumnID], [ToTableID], [ToColumnID], [IsActive]
+                FROM $SYSTEM.TMSCHEMA_RELATIONSHIPS
+                """,
+            ),
+            (
+                ["ID", "FromTableID", "FromColumnID", "ToTableID", "ToColumnID"],
+                """
+                SELECT [ID], [FromTableID], [FromColumnID], [ToTableID], [ToColumnID]
+                FROM $SYSTEM.TMSCHEMA_RELATIONSHIPS
+                """,
+            ),
+        ]
+        relationship_rows, relationship_headers = [], []
+        for candidate_headers, relationship_query in relationship_query_attempts:
+            candidate_rows = execute_xmla_query(cursor, relationship_query)
+            if candidate_rows is not None:
+                relationship_rows = candidate_rows
+                relationship_headers = candidate_headers
+                break
+
+        for row in relationship_rows or []:
+            item = _row_to_dict(row, relationship_headers)
+            from_table = table_map.get(item.get("FromTableID"), "Unknown")
+            to_table = table_map.get(item.get("ToTableID"), "Unknown")
+            if _is_internal_semantic_name(from_table) or _is_internal_semantic_name(to_table):
+                continue
+            relationships.append({
+                "Semantic Workspace Name": workspace_name or "N/A",
+                "Semantic Model Name": dataset_name or "N/A",
+                "Relationship ID": _relationship_value(item.get("ID")),
+                "From Table": from_table,
+                "From Column": column_map.get(item.get("FromColumnID"), "Unknown"),
+                "To Table": to_table,
+                "To Column": column_map.get(item.get("ToColumnID"), "Unknown"),
+                "Active": _relationship_value(item.get("IsActive"), "Not returned"),
+                "Cross Filter Direction": _relationship_value(
+                    item.get("CrossFilteringBehavior"), "Not returned"
+                ),
+                "From Cardinality": _relationship_value(item.get("FromCardinality"), "Not returned"),
+                "To Cardinality": _relationship_value(item.get("ToCardinality"), "Not returned"),
+            })
+        return relationships
+    except Exception as exc:
+        st.warning(
+            f"Could not fetch semantic-model relationships for Dataset {dataset_id}: {exc}"
+        )
+        return relationships
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_semantic_relationships_for_contexts(
+    contexts,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    cache_prefix,
+):
+    rows = []
+    for context in contexts or []:
+        dataset_id = context.get("Dataset ID")
+        workspace_id = context.get("Target Workspace ID")
+        if not dataset_id or not workspace_id:
+            continue
+        cache_key = f"{cache_prefix}_semantic_relationships_v1_{workspace_id}_{dataset_id}"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = get_semantic_model_relationships(
+                headersSPA,
+                headersSP,
+                workspace_id,
+                dataset_id,
+                xmla_token,
+                workspace_name_hint=context.get("Workspace"),
+                dataset_name_hint=context.get("Semantic Model Name"),
+                auth_headers=[("MasterUser", headersSPA)],
+            )
+        for relationship in st.session_state.get(cache_key) or []:
+            if isinstance(relationship, dict):
+                rows.append({
+                    "Scope Type": context.get("Scope Type"),
+                    "Workspace": context.get("Workspace"),
+                    "App Name": context.get("App Name"),
+                    "Source Report": context.get("Source Report"),
+                    "Report ID": context.get("Report ID"),
+                    "Dataset ID": dataset_id,
+                    **relationship,
+                })
+    return rows
+
+
+def render_semantic_model_relationships_view(
+    contexts,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    cache_prefix,
+    download_key,
+):
+    """Render Tabular Editor-style table relationships for selected report models."""
+    if not contexts:
+        st.info("Select at least one report first.")
+        return []
+
+    rows = _get_semantic_relationships_for_contexts(
+        contexts,
+        headersSPA,
+        headersSP,
+        xmla_token,
+        cache_prefix,
+    )
+    if not rows:
+        st.info(
+            "No semantic-model relationships were returned. Check XMLA access, model compatibility, and relationship metadata permissions."
+        )
+        return []
+
+    requested_columns = [
+        "Workspace", "Source Report", "Dataset ID", "Semantic Model Name",
+        "From Table", "From Column", "To Table", "To Column", "Active",
+        "Cross Filter Direction", "From Cardinality", "To Cardinality",
+    ]
+    display_df = _clean_dataframe_for_display(
+        _select_existing_columns(pd.DataFrame(rows), requested_columns)
+    )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download semantic relationships as CSV",
+        data=display_df.to_csv(index=False).encode("utf-8"),
+        file_name="semantic_model_relationships.csv",
+        mime="text/csv",
+        key=download_key,
+    )
+    return display_df.to_dict("records")
+
+
+def _report_details_csv(records):
+    """Serialize lineage records consistently for a user-downloadable ZIP."""
+    if not records:
+        return ""
+    return _clean_dataframe_for_display(pd.DataFrame(records)).to_csv(index=False)
+
+
+def _report_details_export_filename(context):
+    name = re.sub(
+        r"[^A-Za-z0-9]+",
+        "_",
+        str(context.get("Source Report") or "report_details"),
+    ).strip("_")
+    return f"{(name or 'report_details')[:60]}_lineage_details.zip"
+
+
+def _build_report_details_export(
+    context,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    scope_key,
+):
+    """Build an in-memory, metadata-only report-detail package.
+
+    The archive deliberately contains parsed metadata rather than a PBIX or report
+    data. It can therefore be exported without copying business records or tokens.
+    Visual usage is included only when a report definition was already retrieved or
+    manually uploaded for the current report.
+    """
+    cache_prefix = f"{scope_key}_details_export"
+    source_rows = _get_source_lineage_for_context(
+        context,
+        headersSPA,
+        xmla_token,
+        cache_prefix,
+        auth_headers=[("MasterUser", headersSPA)],
+    )
+    semantic_rows = _get_semantic_objects_for_contexts(
+        [context],
+        headersSPA,
+        headersSP,
+        xmla_token,
+        cache_prefix,
+    )
+    relationship_rows = _get_semantic_relationships_for_contexts(
+        [context],
+        headersSPA,
+        headersSP,
+        xmla_token,
+        cache_prefix,
+    )
+    measure_rows = _get_measure_lineage_rows_for_contexts(
+        [context],
+        headersSPA,
+        xmla_token,
+        cache_prefix,
+    )
+    visual_rows = get_uploaded_layout_records(scope_key, context.get("Report ID"))
+
+    context_fields = {
+        key: context.get(key)
+        for key in (
+            "Workspace", "Source Report", "Report ID", "Dataset ID",
+            "Target Workspace ID", "Report Type", "Report Format",
+        )
+    }
+    availability = {
+        "semantic model objects": len(semantic_rows),
+        "semantic relationships": len(relationship_rows),
+        "source database lineage": len(source_rows),
+        "measure source lineage": len(measure_rows),
+        "visual field usage": len(visual_rows),
+    }
+    lines = [
+        f"# Report detail export: {context_fields.get('Source Report') or 'Unnamed report'}",
+        "",
+        "This package contains read-only metadata only. It does not contain report data, Power BI access tokens, Snowflake credentials, or a PBIX file.",
+        "",
+        "## Report context",
+        "",
+    ]
+    lines.extend(
+        f"- {key}: {value or 'Not returned'}"
+        for key, value in context_fields.items()
+    )
+    lines.extend(["", "## Included metadata", ""])
+    lines.extend(f"- {name}: {count} row(s)" for name, count in availability.items())
+    lines.extend([
+        "",
+        "## Visual metadata note",
+        "",
+        (
+            "Visual usage was included from the report definition retrieved or uploaded in this session."
+            if visual_rows
+            else "Visual usage is not included yet. Open the Visual Details tab, complete Fabric authorization or upload the report layout, then prepare this package again."
+        ),
+        "",
+        "## File guide",
+        "",
+        "- `semantic_model_objects.csv`: tables, columns, calculated columns, measures, and DAX expressions.",
+        "- `semantic_relationships.csv`: model table/column relationships and returned filter/cardinality metadata.",
+        "- `source_database_lineage.csv`: Power Query/native-source objects and query metadata.",
+        "- `measure_source_lineage.csv`: DAX measure dependencies and mapped source fields.",
+        "- `visual_usage.csv`: page, visual, type, role, and semantic field mapping when report-definition metadata is available.",
+    ])
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("README.md", "\n".join(lines) + "\n")
+        package.writestr(
+            "report_context.json",
+            json.dumps(context_fields, ensure_ascii=False, indent=2, default=str),
+        )
+        package.writestr("semantic_model_objects.csv", _report_details_csv(semantic_rows))
+        package.writestr("semantic_relationships.csv", _report_details_csv(relationship_rows))
+        package.writestr("source_database_lineage.csv", _report_details_csv(source_rows))
+        package.writestr("measure_source_lineage.csv", _report_details_csv(measure_rows))
+        if visual_rows:
+            package.writestr("visual_usage.csv", _report_details_csv(visual_rows))
+    return archive.getvalue()
+
+
+def render_report_details_export(
+    context,
+    headersSPA,
+    headersSP,
+    xmla_token,
+    scope_key,
+):
+    """Render a single download action for the selected report's available metadata."""
+    report_key = _safe_widget_key(context.get("Report ID"))
+    state_key = f"{scope_key}_details_export_bytes"
+    with st.expander("Download full report details", expanded=False):
+        st.caption(
+            "Creates one ZIP containing report context, semantic objects, relationships, "
+            "source lineage, measure dependencies, and available visual metadata. It is a "
+            "metadata package, not a PBIX or a copy of report data."
+        )
+        if st.button(
+            "Prepare report details ZIP",
+            type="primary",
+            use_container_width=True,
+            key=f"{scope_key}_details_export_prepare",
+        ):
+            with st.spinner("Collecting available report metadata for download..."):
+                try:
+                    st.session_state[state_key] = _build_report_details_export(
+                        context,
+                        headersSPA,
+                        headersSP,
+                        xmla_token,
+                        scope_key,
+                    )
+                except Exception as exc:
+                    st.error(
+                        "Could not prepare the report-detail package. Review XMLA and report-definition access, then try again."
+                    )
+                    st.session_state.pop(state_key, None)
+                    return
+        package = st.session_state.get(state_key)
+        if package:
+            st.download_button(
+                "Download report details ZIP",
+                data=package,
+                file_name=_report_details_export_filename(context),
+                mime="application/zip",
+                key=f"{scope_key}_details_export_download_{report_key}",
+                icon=":material/download:",
+                use_container_width=True,
+            )
+
+
 def build_workspace_report_contexts(selected_art_keys, artifact_mapping):
     contexts = []
     for art_key in selected_art_keys:
@@ -8040,6 +8493,16 @@ def _measure_definition_provider_label(provider_key):
     return labels.get(str(provider_key or "auto"), "Auto (enabled provider order)")
 
 
+def _selected_measure_dax_expression(row):
+    """Return the exact semantic-model DAX retained for a Measure Detail selection."""
+    return _prefer_non_na(
+        row.get("Semantic_DAX_Expression"),
+        row.get("DAX Expression"),
+        row.get("Target Expression"),
+        row.get("Target_Expression"),
+    )
+
+
 def render_measure_detail_definition_form(display_df, key_prefix):
     """Let the user select one measure row and fetch its detail using Snowflake."""
     if display_df is None or display_df.empty:
@@ -8138,6 +8601,13 @@ def render_measure_detail_definition_form(display_df, key_prefix):
             with st.container(border=True):
                 st.markdown(f"**{selection.get('label', 'Selected measure')}**")
                 st.caption(f"Definition type: {selection.get('provider_label', 'Auto')}")
+                raw_dax = _selected_measure_dax_expression(selection.get("row") or {})
+                if _is_meaningful_value(raw_dax):
+                    st.markdown("#### Exact DAX Formula")
+                    st.caption("Read directly from the selected semantic-model measure; this is not LLM-generated.")
+                    st.code(str(raw_dax), language="dax")
+                else:
+                    st.caption("The semantic model did not return a DAX expression for this measure.")
                 st.markdown(definition)
 
 
@@ -8796,6 +9266,7 @@ def _build_table_impact_analysis(
                 }
                 for dependency_row, match_field, match_value in matching_dependencies:
                     measure_name = _table_impact_measure_name(dependency_row)
+                    visual_details = _visual_details_for_measure(visual_rows, measure_name)
                     measure_rows.append({
                         "Workspace": context.get("Workspace"),
                         "Report": context.get("Source Report"),
@@ -8819,6 +9290,7 @@ def _build_table_impact_analysis(
                             if normalize_identifier(measure_name) in visual_measure_markers
                             else visual_evidence
                         ),
+                        **visual_details,
                     })
         except Exception as exc:
             scan_errors.append({
@@ -8992,6 +9464,35 @@ def _measure_name_matches(value, query, include_partial=False):
     return candidate == target or (include_partial and target in candidate)
 
 
+def _related_measure_suggestions(query, measure_names, limit=8):
+    """Return close semantic-measure names when an exact search does not match.
+
+    This is deterministic UI guidance, not an AI guess: suggestions are names that
+    were actually returned by the authorized semantic-model metadata scan.
+    """
+    requested = str(query or "").strip()
+    requested_marker = normalize_identifier(requested)
+    if not requested_marker:
+        return []
+
+    candidates = {}
+    for value in measure_names or []:
+        candidate = str(value or "").strip()
+        candidate_marker = normalize_identifier(candidate)
+        if candidate and candidate_marker and candidate_marker != requested_marker:
+            candidates.setdefault(candidate_marker, candidate)
+
+    ranked = []
+    for marker, candidate in candidates.items():
+        ratio = difflib.SequenceMatcher(None, requested_marker, marker).ratio()
+        if requested_marker in marker or marker in requested_marker:
+            ratio = max(ratio, 0.92)
+        if ratio >= 0.52:
+            ranked.append((ratio, candidate.casefold(), candidate))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [candidate for _score, _sort, candidate in ranked[:max(1, min(12, int(limit or 8)))]]
+
+
 def _measure_impact_visual_evidence(layout_records, measure_names):
     measure_markers = {
         normalize_identifier(name): str(name)
@@ -9037,6 +9538,27 @@ def _measure_impact_visual_evidence(layout_records, measure_names):
     return matching_rows, len(visual_keys), confirmed_markers
 
 
+def _visual_details_for_measure(layout_records, measure_name):
+    """Return confirmed report-definition visual details for one measure."""
+    matching_rows, _visual_count, _markers = _measure_impact_visual_evidence(
+        layout_records,
+        [measure_name],
+    )
+
+    def values(field):
+        return "; ".join(sorted({
+            str(row.get(field) or "").strip()
+            for row in matching_rows
+            if _is_meaningful_value(row.get(field))
+        }, key=str.casefold)) or "N/A"
+
+    return {
+        "Visual Names": values("Visual Name"),
+        "Visual Pages": values("Page Name"),
+        "Visual Types": values("Visualization Type"),
+    }
+
+
 def _build_measure_impact_analysis(
     records,
     measure_query,
@@ -9065,6 +9587,7 @@ def _build_measure_impact_analysis(
     visual_metadata_report_keys = set()
     visual_errors = []
     scan_errors = []
+    available_measure_names = set()
     progress = st.progress(0, text="Preparing measure impact scan...")
     groups = list(model_groups.items())
 
@@ -9098,6 +9621,12 @@ def _build_measure_impact_analysis(
                     include_partial,
                 )
             ]
+            available_measure_names.update(
+                str(row.get("Semantic Object Name") or "").strip()
+                for row in catalog_rows
+                if _semantic_dependency_type(row.get("Object Type")) == "MEASURE"
+                and str(row.get("Semantic Object Name") or "").strip()
+            )
             matching_dependencies = [
                 row for row in dependency_rows
                 if _is_meaningful_value(_table_impact_measure_name(row))
@@ -9107,6 +9636,11 @@ def _build_measure_impact_analysis(
                     include_partial,
                 )
             ]
+            available_measure_names.update(
+                _table_impact_measure_name(row)
+                for row in dependency_rows
+                if _is_meaningful_value(_table_impact_measure_name(row))
+            )
 
             measure_metadata = {}
             for row in matching_catalog:
@@ -9154,7 +9688,7 @@ def _build_measure_impact_analysis(
                     headersSPA,
                     fabric_headers=fabric_headers,
                 )
-                _, visual_count, visual_measure_markers = _measure_impact_visual_evidence(
+                matching_visual_rows, visual_count, visual_measure_markers = _measure_impact_visual_evidence(
                     layout_records,
                     model_measure_names,
                 )
@@ -9190,6 +9724,10 @@ def _build_measure_impact_analysis(
 
                 for marker, metadata in measure_metadata.items():
                     dependencies = dependency_by_measure.get(marker) or [None]
+                    visual_details = _visual_details_for_measure(
+                        matching_visual_rows,
+                        metadata.get("name"),
+                    )
                     for dependency_row in dependencies:
                         dependency_row = dependency_row or {}
                         lineage_rows.append({
@@ -9220,6 +9758,7 @@ def _build_measure_impact_analysis(
                                 if marker in visual_measure_markers
                                 else visual_evidence
                             ),
+                            **visual_details,
                         })
         except Exception as exc:
             scan_errors.append({
@@ -9262,6 +9801,10 @@ def _build_measure_impact_analysis(
         "lineage_rows": lineage_df.to_dict("records"),
         "visual_errors": visual_errors,
         "errors": scan_errors,
+        "related_measure_suggestions": _related_measure_suggestions(
+            measure_query,
+            available_measure_names,
+        ),
     }
 
 
@@ -9344,6 +9887,17 @@ def render_measure_impact_analysis_view(records, headersSPA, headersSP, xmla_tok
     lineage_rows = result.get("lineage_rows") or []
     if not report_rows:
         st.info("No matching measure was found in the selected report models.")
+        suggestions = result.get("related_measure_suggestions") or []
+        if suggestions:
+            st.info(
+                "Check the spelling or try one of these related measures: "
+                + ", ".join(f"`{name}`" for name in suggestions) + "."
+            )
+        else:
+            st.caption(
+                "No close measure name was found in the authorized model metadata. "
+                "Try a broader term and enable partial-name matches."
+            )
         if result.get("errors"):
             st.warning(f"{len(result['errors'])} semantic model scan(s) returned an error.")
         return
@@ -10339,6 +10893,104 @@ def _render_claude_markdown_download(message, key):
     )
 
 
+def _powerai_json_content(value):
+    """Decode JSON evidence content without treating arbitrary model text as data."""
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or candidate[0] not in "[{":
+        return None
+    try:
+        return json.loads(candidate)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _powerai_snowflake_diagram_specs(evidence_packets):
+    """Extract bounded Snowflake table/column diagram inputs from agent tool evidence."""
+    specs = []
+    seen = set()
+
+    def add_trace(packet):
+        result = _powerai_json_content(packet.get("content"))
+        if not isinstance(result, dict) or result.get("truncated"):
+            return
+        rows = [row for row in result.get("rows") or [] if isinstance(row, dict)]
+        object_name = str(result.get("object_name") or "").strip()
+        object_type = str(result.get("object_type") or "").strip().upper()
+        column_name = str(result.get("column_name") or "").strip()
+        if not object_name or not rows:
+            return
+        lineage_grain = "COLUMN" if object_type == "COLUMN" or column_name else "OBJECT"
+        if lineage_grain == "COLUMN" and not column_name:
+            return
+        source_type = "COLUMN" if lineage_grain == "COLUMN" else object_type or "VIEW"
+        key = (object_name.casefold(), column_name.casefold(), source_type, str(result.get("direction") or "").upper())
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append({
+            "rows": rows,
+            "payload": {
+                "source_fully_qualified_name": object_name,
+                "source_column": column_name,
+                "lineage_grain": lineage_grain,
+                "source_object_type": source_type,
+            },
+            "lineage_grain": lineage_grain,
+            "source_object": object_name,
+            "source_type": source_type,
+            "direction": str(result.get("direction") or "").upper(),
+        })
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if str(value.get("tool") or "") == "trace_snowflake_lineage":
+            add_trace(value)
+        for field in ("content", "evidence", "evidence_packets", "packets"):
+            nested = _powerai_json_content(value.get(field))
+            if nested is not None:
+                visit(nested)
+
+    visit(list(evidence_packets or []))
+    return specs[:3]
+
+
+def _render_powerai_lineage_diagrams(message, key_prefix):
+    """Render a PowerAI-requested lineage diagram only from returned tool evidence."""
+    if not bool(message.get("lineage_diagram_requested")):
+        return
+    specs = _powerai_snowflake_diagram_specs(message.get("evidence_packets") or [])
+    if not specs:
+        return
+    st.caption("Lineage diagram rendered from the read-only Snowflake tool evidence returned for this answer.")
+    for index, spec in enumerate(specs):
+        label = (
+            "Column lineage diagram"
+            if spec["lineage_grain"] == "COLUMN"
+            else "Table lineage diagram"
+        )
+        source_label = spec["source_object"]
+        if spec["lineage_grain"] == "COLUMN":
+            source_label = f"{source_label}.{spec['payload']['source_column']}"
+        with st.expander(f"{label}: {source_label}", expanded=len(specs) == 1):
+            render_snowflake_lineage_diagram(
+                spec["rows"],
+                spec["payload"],
+                spec["lineage_grain"],
+                spec["source_object"],
+                spec["source_type"],
+                f"{key_prefix}_snowflake_{index}",
+            )
+
+
 def _claude_agent_prompt_suggestions(records, selected_workspaces):
     """Return prompt starters based only on the visible workspace/report inventory."""
     scoped_records = _agent_scoped_records(records, selected_workspaces)
@@ -10626,6 +11278,10 @@ def render_claude_lineage_agent_page(
                     message.get("usage") or {},
                     message.get("orchestration") or {},
                 )
+                _render_powerai_lineage_diagrams(
+                    message,
+                    f"{widget_key_prefix}_history_{message_index}",
+                )
                 _render_claude_markdown_download(message, message_index)
 
     def render_powerai_history(history_messages, collapse_all=False):
@@ -10760,6 +11416,7 @@ def render_claude_lineage_agent_page(
 
     scoped_records = _agent_scoped_records(records, selected_workspaces)
     visual_details_requested = question_requests_visual_details(user_message["content"])
+    lineage_diagram_requested = question_requests_lineage_diagram(user_message["content"])
     agent_messages = messages if visual_details_requested else [user_message]
     tool_executor = _build_claude_lineage_tool_executor(
         scoped_records,
@@ -10784,7 +11441,17 @@ def render_claude_lineage_agent_page(
         "covers reports, semantic objects, physical source lineage, and measure lineage. "
         "Do not request, retrieve, or include visual-level evidence unless the user's "
         "question explicitly asks for visual details, visual usage, pages, charts, cards, "
-        "or slicers."
+        "or slicers. When an answer includes a Power BI measure, add a short heading "
+        "called 'Plain-English definition' that explains the measure in ordinary business "
+        "language using only returned DAX and lineage evidence; explicitly state when its "
+        "business meaning cannot be determined from that metadata. "
+        + (
+            "The user explicitly requested a lineage diagram. Trace the exact Snowflake table "
+            "or mapped source column with trace_snowflake_lineage when its identifier is returned "
+            "by evidence; the app will render only the returned trace rows as a diagram."
+            if lineage_diagram_requested
+            else ""
+        )
     )
     route = plan_claude_agent_route(user_message["content"], request_settings)
     managed_configuration_error = None
@@ -10915,6 +11582,7 @@ def render_claude_lineage_agent_page(
                 "usage": result.get("usage") or {},
                 "orchestration": result.get("orchestration") or {},
                 "evidence_packets": result.get("evidence_packets") or [],
+                "lineage_diagram_requested": lineage_diagram_requested,
                 "question": user_message["content"],
                 "document_context": {
                     "workspace_names": selected_workspaces,
@@ -10956,6 +11624,10 @@ def render_claude_lineage_agent_page(
                 assistant_message["usage"],
                 assistant_message["orchestration"],
             )
+            _render_powerai_lineage_diagrams(
+                assistant_message,
+                f"{widget_key_prefix}_current",
+            )
             _render_claude_markdown_download(assistant_message, "current")
         except (ClaudeAgentError, ClaudeConfigurationError) as exc:
             progress_placeholder.empty()
@@ -10994,6 +11666,11 @@ _POWERAI_ACTIVE_CHAT_KEY = "powerai_active_chat_id"
 
 def _close_powerai_dialog():
     st.session_state[_POWERAI_PANEL_OPEN_KEY] = False
+
+
+def _open_powerai_dialog():
+    """Open the assistant without issuing a second full-page rerun."""
+    st.session_state[_POWERAI_PANEL_OPEN_KEY] = True
 
 
 def _powerai_chat_messages_key(chat_id):
@@ -11101,19 +11778,18 @@ def render_powerai_dialog(
 
 
 def render_powerai_floating_button():
-    """Render the fixed PowerAI launcher used across authenticated views."""
+    """Render the fixed PowerAI launcher without resetting the active workflow."""
     with st.container(key="powerai_fab_container"):
         st.markdown('<span class="powerai-fab-anchor"></span>', unsafe_allow_html=True)
-        if st.button(
+        st.button(
             "PowerAI",
             key="powerai_fab_open",
             icon=":material/auto_awesome:",
             type="primary",
             help="Open PowerAI",
             use_container_width=True,
-        ):
-            st.session_state[_POWERAI_PANEL_OPEN_KEY] = True
-            st.rerun()
+            on_click=_open_powerai_dialog,
+        )
 
 
 def render_powerai_workspace(
@@ -11967,35 +12643,39 @@ st.markdown(
             font-size: 0.66rem;
             margin-top: 0.14rem;
         }
-        .main .block-container {
-            width: 100%;
-            max-width: none;
-            margin-left: 0;
-            margin-right: 0;
-            padding-top: 1.25rem;
-            padding-bottom: 3rem;
-            padding-left: 1.4rem;
-            padding-right: 1.4rem;
-        }
+        .main .block-container,
         div[data-testid="stMainBlockContainer"] {
             width: 100%;
             max-width: none;
             margin-left: 0;
             margin-right: 0;
+            padding-top: 0 !important;
+            padding-bottom: 3rem;
             padding-left: 1.4rem;
             padding-right: 1.4rem;
         }
-        .st-key-powerai_fab_container {
+        div[data-testid="stMainBlockContainer"] {
+            padding-left: 1.4rem;
+            padding-right: 1.4rem;
+        }
+        .st-key-powerai_fab_container,
+        .st-key-powerai_fab_open {
             position: fixed;
             right: 1.35rem;
             bottom: 1.35rem;
             width: 156px !important;
-            z-index: 998;
+            z-index: 2147483000 !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
         }
         .st-key-powerai_fab_container .powerai-fab-anchor {
             display: none;
         }
-        .st-key-powerai_fab_container div.stButton > button {
+        .st-key-powerai_fab_container div.stButton > button,
+        .st-key-powerai_fab_open div.stButton > button,
+        .st-key-powerai_fab_open button {
             min-height: 56px;
             border: 1px solid #93c5fd;
             border-radius: 999px;
@@ -12005,19 +12685,25 @@ st.markdown(
             font-weight: 850;
             padding: 0.78rem 1.05rem;
         }
-        .st-key-powerai_fab_container div.stButton > button:hover {
+        .st-key-powerai_fab_container div.stButton > button:hover,
+        .st-key-powerai_fab_open div.stButton > button:hover,
+        .st-key-powerai_fab_open button:hover {
             border-color: #bfdbfe;
             background: linear-gradient(135deg, #1d4ed8 0%, #0f2d5c 100%);
             color: #ffffff;
             box-shadow: 0 20px 38px rgba(37, 99, 235, 0.42), 0 6px 16px rgba(15, 23, 42, 0.22);
         }
-        .st-key-powerai_fab_container div.stButton > button p {
+        .st-key-powerai_fab_container div.stButton > button p,
+        .st-key-powerai_fab_open div.stButton > button p,
+        .st-key-powerai_fab_open button p {
             color: #ffffff;
             font-size: 0.98rem;
             font-weight: 850;
             letter-spacing: 0;
         }
-        .st-key-powerai_fab_container div.stButton > button span[class*="material-symbols"] {
+        .st-key-powerai_fab_container div.stButton > button span[class*="material-symbols"],
+        .st-key-powerai_fab_open div.stButton > button span[class*="material-symbols"],
+        .st-key-powerai_fab_open button span[class*="material-symbols"] {
             color: #ffffff;
             font-size: 1.15rem;
         }
@@ -12455,17 +13141,21 @@ st.markdown(
             [data-testid="stSidebarCollapseButton"] {
                 display: inline-flex;
             }
-            .main .block-container {
-                padding-top: 1rem;
+            .main .block-container,
+            div[data-testid="stMainBlockContainer"] {
+                padding-top: 0 !important;
                 padding-left: 1rem;
                 padding-right: 1rem;
             }
-            .st-key-powerai_fab_container {
+            .st-key-powerai_fab_container,
+            .st-key-powerai_fab_open {
                 right: 1rem;
                 bottom: 1rem;
                 width: 144px !important;
             }
-            .st-key-powerai_fab_container div.stButton > button {
+            .st-key-powerai_fab_container div.stButton > button,
+            .st-key-powerai_fab_open div.stButton > button,
+            .st-key-powerai_fab_open button {
                 min-height: 50px;
                 padding: 0.68rem 0.9rem;
             }
@@ -12588,6 +13278,7 @@ if workflow_mode == "report_lineage":
             render_semantic_model_objects_view=render_semantic_model_objects_view,
             render_measure_source_lineage_view=render_measure_source_lineage_view,
             render_report_layout_view=render_upload_only_report_layout_view,
+            render_report_details_export=render_report_details_export,
             render_visual_source_lookup_view=render_visual_source_lookup_view,
             safe_widget_key=_safe_widget_key,
             logout_and_clear_session=logout_and_clear_session,

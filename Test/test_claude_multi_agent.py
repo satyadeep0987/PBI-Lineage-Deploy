@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from pbi_modules.claude_agent import (
     lineage_agent_tool_definitions,
     plan_claude_agent_route,
+    question_requests_lineage_diagram,
     question_requests_visual_details,
     resolve_claude_settings,
     run_claude_orchestrated_agent,
@@ -119,6 +120,17 @@ class ClaudeMultiAgentRouteTests(unittest.TestCase):
             _settings(max_specialist_agents=4),
         )
         self.assertNotIn("visual_evidence", route["specialists"])
+
+    def test_lineage_diagram_request_selects_snowflake_specialist(self):
+        question = "Draw a lineage diagram for the Net Sales measure and its source column."
+        self.assertTrue(question_requests_lineage_diagram(question))
+
+        route = plan_claude_agent_route(
+            question,
+            _settings(max_specialist_agents=4),
+        )
+
+        self.assertIn("snowflake_lineage", route["specialists"])
 
     def test_haiku_cost_defaults_are_selected_from_model_name(self):
         settings = resolve_claude_settings(_settings())

@@ -35,6 +35,32 @@ def question_requests_visual_details(question: str) -> bool:
     )
     return any(marker in text for marker in visual_markers)
 
+
+def question_requests_lineage_diagram(question: str) -> bool:
+    """Return True when the user explicitly requests a lineage diagram/graph."""
+    text = str(question or "").casefold()
+    diagram_markers = (
+        "lineage diagram",
+        "lineage graph",
+        "show a diagram",
+        "show diagram",
+        "draw the lineage",
+        "visualize lineage",
+        "visualise lineage",
+        "lineage flow",
+    )
+    if any(marker in text for marker in diagram_markers):
+        return True
+    diagram_term_present = any(
+        term in text
+        for term in ("diagram", "diagrams", "daigram", "graph", "visualize", "visualise")
+    )
+    lineage_term_present = any(
+        term in text
+        for term in ("lineage", "measure", "measures", "table", "tables", "column", "columns", "source")
+    )
+    return diagram_term_present and lineage_term_present
+
 SPECIALIST_AGENT_PROFILES = {
     "powerbi_semantic": {
         "label": "Power BI semantic specialist",
@@ -611,7 +637,9 @@ def lineage_agent_tool_definitions(max_snowflake_depth: int = 20) -> List[Dict[s
             "name": "trace_snowflake_lineage",
             "description": (
                 "Trace an authorized Snowflake table, view, dynamic table, or column "
-                "upstream or downstream through the configured metadata lineage service."
+                "upstream or downstream through the configured metadata lineage service. "
+                "Use this for an explicit table/column lineage diagram request after the "
+                "exact source object is known; returned rows are rendered by the app."
             ),
             "input_schema": {
                 "type": "object",
@@ -1129,6 +1157,10 @@ def plan_claude_agent_route(
         "table",
         "tables",
         "upstream",
+    }:
+        domains.append("snowflake_lineage")
+    if question_requests_lineage_diagram(question) and terms & {
+        "lineage", "table", "tables", "measure", "measures", "column", "columns", "source", "sources",
     }:
         domains.append("snowflake_lineage")
     if terms & {

@@ -486,6 +486,7 @@ def render_direct_measure_lookup_page(
     render_semantic_model_objects_view,
     render_measure_source_lineage_view,
     render_report_layout_view,
+    render_report_details_export,
     render_visual_source_lookup_view,
     safe_widget_key,
     logout_and_clear_session,
@@ -602,6 +603,14 @@ def render_direct_measure_lookup_page(
                 f"report_lineage_{report_key}",
                 f"report_lineage_lookup_download_{report_key}",
             )
+
+        render_report_details_export(
+            context,
+            headersSPA,
+            headersSP,
+            xmla_token,
+            scope_key,
+        )
 
     with visual_details_tab:
         st.write("### Visual Details")
