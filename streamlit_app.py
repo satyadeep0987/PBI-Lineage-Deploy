@@ -6442,10 +6442,23 @@ def _apply_lineage_display_contract(df, view_name):
     # Rename only display columns; internal data model remains unchanged.
     display_df = display_df.rename(columns=contract.get("rename", {}))
 
-    # Fallback: measure name can be pruned as duplicate before reaching this display layer.
-    if view_name == "measure_source_lineage" and "Semantic_Measure_Name" not in display_df.columns:
-        if "Semantic_Object_Name" in display_df.columns:
-            display_df["Semantic_Measure_Name"] = display_df["Semantic_Object_Name"]
+    # A mixed result set can retain Semantic_Measure_Name because measure rows have
+    # values, while calculated-column rows remain blank. Fill only those blank cells
+    # from the matching semantic object so every lineage row identifies the object the
+    # user is tracing; never overwrite an actual measure name returned by XMLA.
+    if view_name == "measure_source_lineage" and "Semantic_Object_Name" in display_df.columns:
+        semantic_object_names = display_df["Semantic_Object_Name"].fillna("").astype(str)
+        if "Semantic_Measure_Name" not in display_df.columns:
+            display_df["Semantic_Measure_Name"] = semantic_object_names
+        else:
+            semantic_measure_names = display_df["Semantic_Measure_Name"].fillna("").astype(str)
+            blank_measure_names = semantic_measure_names.str.strip().str.lower().isin(
+                {"", "n/a", "na", "none", "null", "nan"}
+            )
+            display_df.loc[
+                blank_measure_names,
+                "Semantic_Measure_Name",
+            ] = semantic_object_names.loc[blank_measure_names]
 
     # Keep only the requested columns, in the exact requested order, if present.
     requested = contract.get("columns", [])
