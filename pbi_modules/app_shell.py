@@ -1,10 +1,142 @@
 import html
+import hashlib
 import time
+from urllib.parse import urlencode
 
 import streamlit as st
 
 
 _EXCLUDED_WORKSPACE_NAMES = frozenset({"admin monitoring"})
+_WORKFLOW_QUERY_PARAM = "workflow"
+_SHARED_APP_CACHE_CLEAR_REQUEST_KEY = "_clear_shared_lineage_cache_v1"
+_VALID_WORKFLOW_MODES = {
+    "landing",
+    "guided",
+    "report_lineage",
+    "table_impact",
+    "measure_impact",
+}
+
+
+def _query_param_value(name):
+    """Return one normalized Streamlit query-param value."""
+    try:
+        value = st.query_params.get(name)
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        value = value[-1] if value else ""
+    return str(value or "").strip()
+
+
+def _workflow_params(mode, context=None):
+    """Build normalized workflow query parameters."""
+    safe_mode = str(mode or "").strip()
+    if safe_mode not in _VALID_WORKFLOW_MODES:
+        safe_mode = "landing"
+
+    params = {_WORKFLOW_QUERY_PARAM: safe_mode}
+    if safe_mode == "report_lineage" and isinstance(context, dict):
+        report_id = str(context.get("Report ID") or "").strip()
+        workspace_id = str(
+            context.get("Report Workspace ID")
+            or context.get("Workspace ID")
+            or context.get("Target Workspace ID")
+            or ""
+        ).strip()
+        dataset_id = str(
+            context.get("Dataset ID")
+            or context.get("Primary Dataset ID")
+            or ""
+        ).strip()
+        dataset_workspace_id = str(
+            context.get("Semantic Model Workspace ID")
+            or context.get("Dataset Workspace ID")
+            or ""
+        ).strip()
+        if report_id:
+            params["report_id"] = report_id
+        if workspace_id:
+            params["workspace_id"] = workspace_id
+        if dataset_id:
+            params["dataset_id"] = dataset_id
+        if dataset_workspace_id:
+            params["dataset_workspace_id"] = dataset_workspace_id
+        for source_key, query_key in (
+            ("Source Report", "report_name"),
+            ("Report Name", "report_name"),
+            ("Workspace", "workspace_name"),
+            ("Workspace Name", "workspace_name"),
+            ("Report Type", "report_type"),
+            ("Report Format", "report_format"),
+        ):
+            value = str(context.get(source_key) or "").strip()
+            if value and query_key not in params:
+                params[query_key] = value
+
+    return params
+
+
+def _workflow_url(mode, context=None):
+    """Build a shareable app URL for opening a workflow in another tab."""
+    params = _workflow_params(mode, context)
+    return "?" + urlencode(params)
+
+
+def _replace_workflow_query_params(mode, context=None):
+    """Keep the browser URL aligned with the current app workflow."""
+    try:
+        st.query_params.clear()
+        st.query_params.update(_workflow_params(mode, context))
+    except Exception:
+        return
+
+
+def _navigation_link(label, mode, icon, active=False, context=None):
+    """Render a sidebar navigation row as a browser-native link."""
+    url = html.escape(_workflow_url(mode, context), quote=True)
+    safe_label = html.escape(str(label or "Open"))
+    safe_icon = html.escape(str(icon or "").strip())
+    active_class = " is-active" if active else ""
+    return (
+        f'<a class="lineage-nav-link{active_class}" href="{url}" '
+        f'target="_self" '
+        f'title="Open {safe_label}. Use Ctrl-click, middle-click, or right-click to open in a new tab.">'
+        f'<span class="lineage-nav-icon material-symbols-rounded">{safe_icon}</span>'
+        f'<span class="lineage-nav-text">{safe_label}</span>'
+        f'</a>'
+    )
+
+
+def apply_workflow_query_params():
+    """Hydrate workflow/report context from a shareable app URL."""
+    requested_mode = _query_param_value(_WORKFLOW_QUERY_PARAM)
+    if requested_mode not in _VALID_WORKFLOW_MODES:
+        return
+
+    st.session_state.workflow_mode = requested_mode
+    if requested_mode != "report_lineage":
+        return
+
+    report_id = _query_param_value("report_id")
+    if not report_id:
+        return
+
+    record = {
+        "Workspace Name": _query_param_value("workspace_name"),
+        "Workspace ID": _query_param_value("workspace_id"),
+        "Report Name": _query_param_value("report_name"),
+        "Report ID": report_id,
+        "Dataset ID": _query_param_value("dataset_id"),
+        "Dataset Workspace ID": _query_param_value("dataset_workspace_id"),
+        "Report Type": _query_param_value("report_type"),
+        "Report Format": _query_param_value("report_format"),
+    }
+    context = direct_report_context(record)
+    existing = st.session_state.get("direct_measure_active_context")
+    if not isinstance(existing, dict) or str(existing.get("Report ID") or "") != report_id:
+        st.session_state.direct_measure_active_context = context
+        _remember_recent_report(record)
 
 
 def filter_excluded_workspaces(workspaces):
@@ -53,6 +185,7 @@ def _render_pending_device_flow(get_all_tokens):
 
 def _set_workflow(mode):
     st.session_state.workflow_mode = mode
+    _replace_workflow_query_params(mode)
     st.rerun()
 
 
@@ -80,6 +213,7 @@ def _activate_direct_report(record):
     st.session_state.direct_measure_active_context = direct_report_context(record)
     _remember_recent_report(record)
     st.session_state.workflow_mode = "report_lineage"
+    _replace_workflow_query_params("report_lineage", st.session_state.direct_measure_active_context)
     st.rerun()
 
 
@@ -103,15 +237,15 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
     normalized_mode = str(mode_label or "").strip().casefold()
     destination_aliases = {
         "home": "landing",
-        "guided workflow": "explore",
-        "explore": "explore",
+        "guided workflow": "guided",
+        "explore": "guided",
         "direct measure lookup": "report_lineage",
         "report lineage": "report_lineage",
         "table impact": "table_impact",
         "measure impact": "measure_impact",
         "claude agent": "landing",
     }
-    active_destination = destination_aliases.get(normalized_mode, "explore")
+    active_destination = destination_aliases.get(normalized_mode, "guided")
 
     with st.sidebar:
         st.markdown(
@@ -129,50 +263,27 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
 
         st.markdown('<div class="lineage-nav-label">Navigation</div>', unsafe_allow_html=True)
 
-        if st.button(
-            "Home",
-            key="top_home",
-            type="primary" if active_destination == "landing" else "tertiary",
-            icon=":material/home:",
-            use_container_width=True,
-        ):
-            _set_workflow("landing")
-
-        if st.button(
-            "Explore",
-            key="top_explore",
-            type="primary" if active_destination == "explore" else "tertiary",
-            icon=":material/explore:",
-            use_container_width=True,
-        ):
-            _set_workflow("guided")
-
-        if st.button(
-            "Report Lineage",
-            key="top_report_lineage",
-            type="primary" if active_destination == "report_lineage" else "tertiary",
-            icon=":material/account_tree:",
-            use_container_width=True,
-        ):
-            _set_workflow("report_lineage")
-
-        if st.button(
-            "Table Impact",
-            key="top_table_impact",
-            type="primary" if active_destination == "table_impact" else "tertiary",
-            icon=":material/table_view:",
-            use_container_width=True,
-        ):
-            _set_workflow("table_impact")
-
-        if st.button(
-            "Measure Impact",
-            key="top_measure_impact",
-            type="primary" if active_destination == "measure_impact" else "tertiary",
-            icon=":material/functions:",
-            use_container_width=True,
-        ):
-            _set_workflow("measure_impact")
+        report_context = st.session_state.get("direct_measure_active_context")
+        if not isinstance(report_context, dict):
+            report_context = None
+        nav_items = [
+            ("Home", "landing", "home", None),
+            ("Explore", "guided", "explore", None),
+            ("Report Lineage", "report_lineage", "account_tree", report_context),
+            ("Table Impact", "table_impact", "table_view", None),
+            ("Measure Impact", "measure_impact", "functions", None),
+        ]
+        for label, mode, icon, context in nav_items:
+            st.markdown(
+                _navigation_link(
+                    label,
+                    mode,
+                    icon,
+                    active=(active_destination == mode),
+                    context=context,
+                ),
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
             """
@@ -290,27 +401,41 @@ def _report_card(record, badge="Report"):
     """
 
 
-def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
-    """Load the allowed workspace/report inventory used throughout the application."""
-    cache_key = "accessible_lineage_inventory_v3"
-    cached = st.session_state.get(cache_key)
-    if isinstance(cached, dict):
-        return cached
+def _auth_cache_fingerprint(headers):
+    """Fingerprint the bearer token without exposing it in cached data."""
+    auth_value = ""
+    if isinstance(headers, dict):
+        auth_value = str(headers.get("Authorization") or "").strip()
+    if auth_value.lower().startswith("bearer "):
+        auth_value = auth_value[7:].strip()
+    if not auth_value:
+        return "anonymous"
+    return hashlib.sha256(auth_value.encode("utf-8")).hexdigest()
 
-    workspaces = filter_excluded_workspaces(get_workspace_inventory(headers) or [])
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def _load_accessible_inventory_cached(
+    token_fingerprint,
+    _headers,
+    _get_workspace_inventory,
+    _get_artifacts,
+):
+    """Process-wide inventory cache shared by browser tabs for the same token."""
+    workspaces = filter_excluded_workspaces(_get_workspace_inventory(_headers) or [])
     reports = []
     for workspace in workspaces:
         workspace_id = workspace.get("id")
         workspace_name = workspace.get("name")
         if not workspace_id:
             continue
-        for report in get_artifacts(headers, workspace_id, "report") or []:
+        for report in _get_artifacts(_headers, workspace_id, "report") or []:
             reports.append({
                 "Workspace Name": workspace_name,
                 "Workspace ID": workspace_id,
                 "Report Name": report.get("name"),
                 "Report ID": report.get("id"),
                 "Dataset ID": report.get("datasetId"),
+                "Dataset Workspace ID": report.get("datasetWorkspaceId"),
                 "Report Type": report.get("reportType"),
                 "Report Format": report.get("format"),
                 "Embed URL": report.get("embedUrl"),
@@ -320,9 +445,32 @@ def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
         str(row.get("Report Name") or "").lower(),
         str(row.get("Workspace Name") or "").lower(),
     ))
-    inventory = {"workspaces": workspaces, "reports": reports}
+    return {"workspaces": workspaces, "reports": reports}
+
+
+def _clear_accessible_inventory_cache():
+    """Clear process-wide inventory cache after an explicit user refresh."""
+    try:
+        _load_accessible_inventory_cached.clear()
+    except Exception:
+        return
+
+
+def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
+    """Load the allowed workspace/report inventory used throughout the application."""
+    cache_key = "accessible_lineage_inventory_v4"
+    cached = st.session_state.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    inventory = _load_accessible_inventory_cached(
+        _auth_cache_fingerprint(headers),
+        headers,
+        get_workspace_inventory,
+        get_artifacts,
+    )
     st.session_state[cache_key] = inventory
-    st.session_state["direct_lookup_report_records_v2"] = reports
+    st.session_state["direct_lookup_report_records_v3"] = inventory.get("reports") or []
     return inventory
 
 
@@ -377,8 +525,10 @@ def render_workflow_choice_page(
         st.markdown('<div class="section-heading"><strong>Quick actions</strong><span>Start with the task you need.</span></div>', unsafe_allow_html=True)
     with refresh_col:
         if st.button("Refresh inventory", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v3", None)
-            st.session_state.pop("direct_lookup_report_records_v2", None)
+            _clear_accessible_inventory_cache()
+            st.session_state[_SHARED_APP_CACHE_CLEAR_REQUEST_KEY] = True
+            st.session_state.pop("accessible_lineage_inventory_v4", None)
+            st.session_state.pop("direct_lookup_report_records_v3", None)
             st.session_state.pop("table_impact_analysis_result", None)
             st.session_state.pop("measure_impact_analysis_result", None)
             st.rerun()
@@ -450,7 +600,7 @@ def direct_lookup_report_label(record):
 
 def get_direct_lookup_report_records(headers, get_workspace_inventory, get_artifacts):
     """Return report records visible through the signed-in user's workspaces."""
-    cache_key = "direct_lookup_report_records_v2"
+    cache_key = "direct_lookup_report_records_v3"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
     records = get_accessible_inventory(headers, get_workspace_inventory, get_artifacts).get("reports") or []
@@ -460,6 +610,18 @@ def get_direct_lookup_report_records(headers, get_workspace_inventory, get_artif
 
 def direct_report_context(record):
     label = direct_lookup_report_label(record)
+    report_workspace_id = record.get("Report Workspace ID") or record.get("Workspace ID")
+    semantic_workspace_id = (
+        record.get("Semantic Model Workspace ID")
+        or record.get("Dataset Workspace ID")
+        or record.get("datasetWorkspaceId")
+        or report_workspace_id
+    )
+    has_explicit_model_workspace = bool(
+        record.get("Semantic Model Workspace ID")
+        or record.get("Dataset Workspace ID")
+        or record.get("datasetWorkspaceId")
+    )
     return {
         "Context Key": label,
         "Scope Type": "Workspace",
@@ -469,7 +631,25 @@ def direct_report_context(record):
         "Source Report": record.get("Report Name"),
         "Report ID": record.get("Report ID"),
         "Dataset ID": record.get("Dataset ID"),
-        "Target Workspace ID": record.get("Workspace ID"),
+        "Primary Dataset ID": record.get("Primary Dataset ID") or record.get("Dataset ID"),
+        "Report Workspace ID": report_workspace_id,
+        "Report Workspace": record.get("Report Workspace") or record.get("Workspace Name"),
+        "Semantic Model Workspace ID": semantic_workspace_id,
+        "Semantic Workspace Name": (
+            record.get("Semantic Workspace Name")
+            or record.get("Semantic Model Workspace")
+            or (record.get("Workspace Name") if semantic_workspace_id == report_workspace_id else None)
+        ),
+        # Backward-compatible alias. Model/XMLA code should prefer
+        # Semantic Model Workspace ID and report-definition code should use
+        # Report Workspace ID.
+        "Target Workspace ID": semantic_workspace_id,
+        "Semantic Workspace Resolution": (
+            record.get("Semantic Workspace Resolution")
+            or ("Report inventory" if has_explicit_model_workspace else "Report workspace fallback")
+        ),
+        "Model Role": record.get("Model Role") or "Primary",
+        "Lineage Depth": record.get("Lineage Depth", 0),
         "Report Type": record.get("Report Type"),
         "Report Format": record.get("Report Format"),
     }
@@ -508,8 +688,10 @@ def render_direct_measure_lookup_page(
     refresh_col, _ = st.columns([1, 4])
     with refresh_col:
         if st.button("Refresh reports", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v3", None)
-            st.session_state.pop("direct_lookup_report_records_v2", None)
+            _clear_accessible_inventory_cache()
+            st.session_state[_SHARED_APP_CACHE_CLEAR_REQUEST_KEY] = True
+            st.session_state.pop("accessible_lineage_inventory_v4", None)
+            st.session_state.pop("direct_lookup_report_records_v3", None)
             st.session_state.pop("direct_measure_active_context", None)
             st.rerun()
 
@@ -664,8 +846,10 @@ def _render_impact_page(
     refresh_col, _ = st.columns([1, 4])
     with refresh_col:
         if st.button("Refresh inventory", key=f"refresh_{title.casefold().replace(' ', '_')}", use_container_width=True):
-            st.session_state.pop("accessible_lineage_inventory_v3", None)
-            st.session_state.pop("direct_lookup_report_records_v2", None)
+            _clear_accessible_inventory_cache()
+            st.session_state[_SHARED_APP_CACHE_CLEAR_REQUEST_KEY] = True
+            st.session_state.pop("accessible_lineage_inventory_v4", None)
+            st.session_state.pop("direct_lookup_report_records_v3", None)
             st.session_state.pop("table_impact_analysis_result", None)
             st.session_state.pop("measure_impact_analysis_result", None)
             st.rerun()

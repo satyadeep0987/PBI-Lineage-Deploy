@@ -10,6 +10,9 @@ config/*secret*.json
 !config/*.template.json
 !config/*.example.json
 
+# Local-only interactive authentication helpers and any test artifacts they create.
+local_test_tools/
+
 .streamlit/secrets.toml
 .streamlit/cache/
 .streamlit/runtime/
@@ -43,3 +46,4 @@ Desktop.ini
 .codex*
 
 APP_CONTEXT.md
+test*

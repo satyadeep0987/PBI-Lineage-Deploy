@@ -27,6 +27,7 @@ from xmla_ado_com import connect_xmla
 from pathlib import PurePosixPath
 from urllib.parse import quote
 from pbi_modules.app_shell import (
+    apply_workflow_query_params,
     check_authenticated_session,
     direct_report_context,
     filter_excluded_workspaces,
@@ -155,6 +156,135 @@ def _browser_auth_key_from_cookie(cookie_value):
 def _browser_auth_key():
     """Return the server-side registry key for this browser."""
     return _browser_auth_key_from_cookie(_browser_auth_cookie_value())
+
+
+_SHARED_APP_STATE_TTL_SECONDS = 6 * 60 * 60
+_SHARED_APP_CACHE_CLEAR_REQUEST_KEY = "_clear_shared_lineage_cache_v1"
+_SHARED_APP_STATE_EXACT_KEYS = {
+    "workflow_mode",
+    "direct_measure_active_context",
+    "recent_lineage_reports",
+    "accessible_lineage_inventory_v4",
+    "direct_lookup_report_records_v3",
+    "workspaces_list_v2",
+    "apps_list",
+    "table_impact_query",
+    "measure_impact_query",
+    "table_impact_analysis_result",
+    "measure_impact_analysis_result",
+    "claude_home_featured_reports_v1",
+}
+_SHARED_APP_STATE_PREFIXES = (
+    "reports_",
+    "dashboards_",
+    "ws_users_",
+    "app_reports_",
+    "app_dashboards_",
+    "app_users_",
+    "app_tiles_",
+    "tiles_",
+    "dataset_workspace_",
+    "workspace_report_resolved_ids_v17_",
+    "app_report_resolved_ids_v17_",
+    "workspace_dataset_ids_v1_",
+    "semantic_model_owner_workspace_v1_",
+    "workspace_lineage_scan_v1_",
+    "source_db_lineage_v18_",
+    "js_embed_url_",
+    "impact_suggestion_names_v1_",
+)
+_SHARED_APP_STATE_CONTAINS = (
+    "_semantic_objects_v24_",
+    "_source_lineage_v24_",
+    "_measure_lineage_v24_",
+    "_semantic_relationships_v1_",
+    "_uploaded_layout_records_",
+    "_automatic_layout_v2_",
+    "_details_export_bytes",
+    "_recursive_snowflake_lineage_result",
+    "_snowflake_lineage_payload",
+    "_measure_detail_definition_selection",
+)
+
+
+@st.cache_resource(show_spinner=False)
+def _browser_app_state_registry():
+    """Share non-auth app cache across tabs for the same browser cookie."""
+    return {"lock": threading.RLock(), "states": {}}
+
+
+def _purge_expired_shared_app_state(states, now=None):
+    now = time.time() if now is None else now
+    expired_keys = [
+        key
+        for key, payload in states.items()
+        if now - float((payload or {}).get("updated_at") or 0) > _SHARED_APP_STATE_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        states.pop(key, None)
+
+
+def _is_shared_app_state_key(key):
+    key = str(key or "")
+    if key in _SHARED_APP_STATE_EXACT_KEYS:
+        return True
+    if any(key.startswith(prefix) for prefix in _SHARED_APP_STATE_PREFIXES):
+        return True
+    return any(marker in key for marker in _SHARED_APP_STATE_CONTAINS)
+
+
+def _hydrate_shared_app_state():
+    """Populate a fresh browser tab from previously loaded app cache."""
+    if bool(st.session_state.pop(_SHARED_APP_CACHE_CLEAR_REQUEST_KEY, False)):
+        _forget_shared_app_state()
+        return
+
+    browser_key = _browser_auth_key()
+    if not browser_key:
+        return
+
+    registry = _browser_app_state_registry()
+    now = time.time()
+    with registry["lock"]:
+        _purge_expired_shared_app_state(registry["states"], now)
+        payload = registry["states"].get(browser_key) or {}
+        values = dict(payload.get("values") or {})
+
+    for key, value in values.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _persist_shared_app_state():
+    """Persist non-auth app cache so another tab can reuse it."""
+    browser_key = _browser_auth_key()
+    if not browser_key or not st.session_state.get("auth_bundle"):
+        return
+
+    values = {
+        str(key): value
+        for key, value in list(st.session_state.items())
+        if _is_shared_app_state_key(key)
+    }
+    registry = _browser_app_state_registry()
+    now = time.time()
+    with registry["lock"]:
+        _purge_expired_shared_app_state(registry["states"], now)
+        registry["states"][browser_key] = {
+            "updated_at": now,
+            "values": values,
+        }
+
+
+def _forget_shared_app_state():
+    """Remove this browser's shared non-auth app cache."""
+    browser_key = _browser_auth_key()
+    if not browser_key:
+        return
+
+    registry = _browser_app_state_registry()
+    with registry["lock"]:
+        registry["states"].pop(browser_key, None)
 
 
 def _purge_expired_browser_auth(sessions, now=None):
@@ -679,6 +809,7 @@ def clear_streamlit_session_state(keep_auth=False):
     """
     if not keep_auth:
         _forget_browser_auth()
+        _forget_shared_app_state()
 
     preserved = {"auth_bundle"} if keep_auth else set()
     for key in list(st.session_state.keys()):
@@ -698,6 +829,38 @@ def logout_and_clear_session():
             bundle.get('clientapp_spa'),
         )
     clear_streamlit_session_state(keep_auth=False)
+
+
+def _browser_title_for_workflow(workflow_mode):
+    """Return the browser-tab title for the current navigation workflow."""
+    titles = {
+        "landing": "PBI Lineage Explorer",
+        "guided": "Explore - PBI Lineage Explorer",
+        "report_lineage": "Report Lineage - PBI Lineage Explorer",
+        "table_impact": "Table Impact - PBI Lineage Explorer",
+        "measure_impact": "Measure Impact - PBI Lineage Explorer",
+    }
+    return titles.get(str(workflow_mode or "").strip(), "PBI Lineage Explorer")
+
+
+def _set_browser_title(workflow_mode):
+    """Update the browser tab title after Streamlit routing has resolved."""
+    title_json = json.dumps(_browser_title_for_workflow(workflow_mode))
+    components.html(
+        f"""
+        <script>
+          const pbiLineageTitle = {title_json};
+          if (window.parent && window.parent.document) {{
+            window.parent.document.title = pbiLineageTitle;
+          }} else {{
+            document.title = pbiLineageTitle;
+          }}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 
 # --- POWER BI REST API FUNCTIONS ---
 
@@ -1774,7 +1937,13 @@ def resolve_dataset_for_app_report(headers_sp, original_report_id):
     if response.status_code == 200:
         data = response.json().get('value', [])
         if data:
-            return data[0].get('datasetId'), data[0].get('workspaceId')
+            dataset_id = data[0].get('datasetId')
+            dataset_workspace_id = (
+                data[0].get("datasetWorkspaceId")
+                or resolve_workspace_for_dataset(headers_sp, dataset_id)
+                or data[0].get('workspaceId')
+            )
+            return dataset_id, dataset_workspace_id
     return None, None
 
 def get_table_details(headers, dataset_id):
@@ -2355,7 +2524,10 @@ def _extract_pbir_field(field_obj, query_ref="N/A"):
     if "Aggregation" in field_obj or "aggregation" in field_obj:
         aggregation = field_obj.get("Aggregation") or field_obj.get("aggregation") or {}
         expression = aggregation.get("Expression") or aggregation.get("expression") or {}
-        function_name = _aggregation_function_name(aggregation.get("Function") or aggregation.get("function"))
+        function_value = aggregation.get("Function")
+        if function_value is None:
+            function_value = aggregation.get("function")
+        function_name = _aggregation_function_name(function_value)
         inner = _extract_pbir_field(expression, query_ref)
         inner["Field Type"] = f"{function_name} Aggregation" if function_name != "N/A" else "Aggregation"
         inner["Aggregation"] = function_name
@@ -4424,6 +4596,11 @@ def _parse_power_query_source(m_code):
 
     native_query = _extract_value_native_query(m_code)
     native_query_columns = _extract_select_columns_from_native_query(native_query)
+    analysis_services_match = re.search(
+        r'AnalysisServices\.Database\(\s*"([^"]+)"\s*,\s*"([^"]+)"',
+        m_code,
+        re.IGNORECASE | re.DOTALL,
+    )
 
     # Common navigation table pattern:
     # Source{[Name="DB",Kind="Database"]}[Data]{[Name="SCHEMA",Kind="Schema"]}[Data]{[Name="TABLE",Kind="Table"]}[Data]
@@ -4447,7 +4624,13 @@ def _parse_power_query_source(m_code):
     schema_name = _prefer_non_na(nav_schema, schema_name)
 
     native_sources = []
-    if _is_meaningful_value(native_query):
+    if analysis_services_match:
+        server_name = _clean_source_value(analysis_services_match.group(1))
+        db_name = _clean_source_value(analysis_services_match.group(2))
+        source_name = db_name
+        source_type = "Semantic Model"
+        fqn = f"{server_name} :: {db_name}"
+    elif _is_meaningful_value(native_query):
         native_sources = _extract_native_query_sources(native_query, default_db=db_name)
         if native_sources:
             db_name = _join_unique_meaningful([_prefer_non_na(ref.get("database"), db_name) for ref in native_sources])
@@ -4481,6 +4664,12 @@ def _parse_power_query_source(m_code):
         "Native Query Column Map": _extract_native_query_column_map(native_query),
         "Power Query M": m_code if m_code else "N/A",
         "Fully Qualified Name": _clean_source_value(fqn),
+        "Upstream Semantic Model": (
+            db_name if analysis_services_match else "N/A"
+        ),
+        "Upstream Workspace Endpoint": (
+            server_name if analysis_services_match else "N/A"
+        ),
     }
 
 def resolve_workspace_for_dataset(headers_spa, dataset_id):
@@ -4489,12 +4678,341 @@ def resolve_workspace_for_dataset(headers_spa, dataset_id):
         return None
 
     url = f"https://api.powerbi.com/v1.0/myorg/admin/datasets?$filter=id eq '{dataset_id}'"
-    response = requests.get(url, headers=headers_spa)
-    if response.status_code == 200:
-        datasets = response.json().get('value', [])
-        if datasets:
-            return datasets[0].get('workspaceId')
+    try:
+        response = requests.get(url, headers=headers_spa, timeout=30)
+        if response.status_code == 200:
+            datasets = response.json().get('value', [])
+            if datasets:
+                return datasets[0].get('workspaceId')
+    except requests.RequestException:
+        pass
     return None
+
+
+def _report_workspace_id(context):
+    """Return the workspace that owns the report definition."""
+    if not isinstance(context, dict):
+        return None
+    return (
+        context.get("Report Workspace ID")
+        or context.get("Workspace ID")
+        or (
+            context.get("Target Workspace ID")
+            if context.get("Semantic Workspace Resolution") in {None, "Report workspace fallback"}
+            else None
+        )
+    )
+
+
+def _semantic_workspace_id(context):
+    """Return the workspace that owns the current semantic model."""
+    if not isinstance(context, dict):
+        return None
+    return (
+        context.get("Semantic Model Workspace ID")
+        or context.get("Dataset Workspace ID")
+        or context.get("Target Workspace ID")
+    )
+
+
+def _semantic_workspace_name_hint(context):
+    """Use the report workspace name as an XMLA hint only when it owns the model."""
+    if not isinstance(context, dict):
+        return None
+    explicit_name = context.get("Semantic Workspace Name") or context.get("Semantic Model Workspace")
+    if _is_meaningful_value(explicit_name):
+        return explicit_name
+    if _semantic_workspace_id(context) == _report_workspace_id(context):
+        return context.get("Workspace") or context.get("Report Workspace")
+    return None
+
+
+def _normalize_model_context(context):
+    """Add explicit report/model ownership fields while retaining legacy aliases."""
+    normalized = dict(context or {})
+    report_workspace_id = _report_workspace_id(normalized)
+    semantic_workspace_id = _semantic_workspace_id(normalized) or report_workspace_id
+    dataset_id = normalized.get("Dataset ID")
+
+    normalized["Report Workspace ID"] = report_workspace_id
+    normalized["Report Workspace"] = (
+        normalized.get("Report Workspace")
+        or normalized.get("Workspace")
+        or normalized.get("Container Name")
+    )
+    normalized["Semantic Model Workspace ID"] = semantic_workspace_id
+    normalized["Target Workspace ID"] = semantic_workspace_id
+    normalized["Primary Dataset ID"] = normalized.get("Primary Dataset ID") or dataset_id
+    normalized["Model Role"] = normalized.get("Model Role") or "Primary"
+    normalized["Lineage Depth"] = int(normalized.get("Lineage Depth") or 0)
+    normalized["Semantic Workspace Resolution"] = (
+        normalized.get("Semantic Workspace Resolution")
+        or (
+            "Report inventory"
+            if normalized.get("Dataset Workspace ID")
+            else "Report workspace fallback"
+        )
+    )
+    if (
+        not _is_meaningful_value(normalized.get("Semantic Workspace Name"))
+        and semantic_workspace_id == report_workspace_id
+    ):
+        normalized["Semantic Workspace Name"] = normalized.get("Workspace")
+    return normalized
+
+
+def _workspace_dataset_ids(headers, workspace_id):
+    """Return a cached set of semantic model IDs visible in one workspace."""
+    if not workspace_id:
+        return set()
+    cache_key = f"workspace_dataset_ids_v1_{workspace_id}"
+    if cache_key not in st.session_state:
+        url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets"
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                st.session_state[cache_key] = [
+                    str(dataset.get("id"))
+                    for dataset in response.json().get("value") or []
+                    if isinstance(dataset, dict) and dataset.get("id")
+                ]
+            else:
+                st.session_state[cache_key] = []
+        except (requests.RequestException, ValueError):
+            st.session_state[cache_key] = []
+    return set(st.session_state.get(cache_key) or [])
+
+
+def _resolve_model_context_owner(context, headers):
+    """Resolve a model owner workspace when report inventory supplied only a fallback."""
+    normalized = _normalize_model_context(context)
+    dataset_id = str(normalized.get("Dataset ID") or "").strip()
+    if not dataset_id:
+        return normalized
+
+    resolution = str(normalized.get("Semantic Workspace Resolution") or "")
+    if resolution not in {"", "Report workspace fallback", "Legacy context"}:
+        return normalized
+
+    candidate_workspace_id = _semantic_workspace_id(normalized)
+    if dataset_id in _workspace_dataset_ids(headers, candidate_workspace_id):
+        normalized["Semantic Workspace Resolution"] = "Validated report workspace"
+        return normalized
+
+    cache_key = f"semantic_model_owner_workspace_v1_{dataset_id}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = resolve_workspace_for_dataset(headers, dataset_id) or ""
+    resolved_workspace_id = st.session_state.get(cache_key)
+    if resolved_workspace_id:
+        normalized["Semantic Model Workspace ID"] = resolved_workspace_id
+        normalized["Target Workspace ID"] = resolved_workspace_id
+        normalized["Semantic Workspace Resolution"] = "Admin dataset lookup"
+        if resolved_workspace_id != normalized.get("Report Workspace ID"):
+            normalized["Semantic Workspace Name"] = None
+    return normalized
+
+
+def _workspace_scan_contexts(scan_result):
+    """Build report, dataset, and workspace indexes from a WorkspaceInfo result."""
+    workspace_index = {}
+    report_index = {}
+    report_id_index = {}
+    dataset_index = {}
+    for workspace in (scan_result or {}).get("workspaces") or []:
+        if not isinstance(workspace, dict):
+            continue
+        workspace_id = str(workspace.get("id") or "").strip()
+        if not workspace_id:
+            continue
+        workspace_index[workspace_id] = workspace
+        for report in workspace.get("reports") or []:
+            if not isinstance(report, dict) or not report.get("id"):
+                continue
+            report_index[(workspace_id, str(report.get("id")))] = report
+            report_id_index.setdefault(str(report.get("id")), []).append((workspace_id, report))
+        for dataset in workspace.get("datasets") or []:
+            if not isinstance(dataset, dict) or not dataset.get("id"):
+                continue
+            dataset_index[str(dataset.get("id"))] = (workspace_id, dataset)
+    return workspace_index, report_index, report_id_index, dataset_index
+
+
+def _expand_contexts_from_workspace_scan(contexts, scan_result):
+    """Expand report contexts to primary and upstream semantic models."""
+    workspace_index, report_index, report_id_index, dataset_index = _workspace_scan_contexts(scan_result)
+    expanded = []
+    seen = set()
+
+    for original in contexts or []:
+        primary = _normalize_model_context(original)
+        report_id = str(primary.get("Report ID") or "")
+        report_workspace_id = str(primary.get("Report Workspace ID") or "")
+        scan_report = report_index.get((report_workspace_id, report_id))
+        if scan_report is None and len(report_id_index.get(report_id) or []) == 1:
+            report_workspace_id, scan_report = report_id_index[report_id][0]
+            primary["Report Workspace ID"] = report_workspace_id
+            primary["Report Workspace"] = (
+                (workspace_index.get(report_workspace_id) or {}).get("name")
+                or primary.get("Report Workspace")
+            )
+
+        if isinstance(scan_report, dict):
+            primary_dataset_id = scan_report.get("datasetId") or primary.get("Dataset ID")
+            scanned_model_workspace_id = (
+                scan_report.get("datasetWorkspaceId")
+                or (dataset_index.get(str(primary_dataset_id)) or (None, None))[0]
+            )
+            primary["Dataset ID"] = primary_dataset_id
+            primary["Primary Dataset ID"] = primary_dataset_id
+            if scanned_model_workspace_id:
+                primary["Semantic Model Workspace ID"] = scanned_model_workspace_id
+                primary["Target Workspace ID"] = scanned_model_workspace_id
+                primary["Semantic Workspace Resolution"] = "Admin workspace scan"
+
+        primary_dataset_id = str(primary.get("Dataset ID") or "")
+        indexed_primary = dataset_index.get(primary_dataset_id)
+        if indexed_primary:
+            model_workspace_id, dataset_metadata = indexed_primary
+            primary["Semantic Model Workspace ID"] = model_workspace_id
+            primary["Target Workspace ID"] = model_workspace_id
+            primary["Semantic Workspace Name"] = (
+                (workspace_index.get(model_workspace_id) or {}).get("name")
+                or primary.get("Semantic Workspace Name")
+            )
+            primary["Semantic Model Name"] = dataset_metadata.get("name") or primary.get("Semantic Model Name")
+            primary["Semantic Workspace Resolution"] = "Admin workspace scan"
+
+        primary["Model Role"] = "Primary"
+        primary["Lineage Depth"] = 0
+        queue = [primary]
+        while queue:
+            current = queue.pop(0)
+            current_dataset_id = str(current.get("Dataset ID") or "")
+            current_key = (report_id, current_dataset_id)
+            if not current_dataset_id or current_key in seen:
+                continue
+            seen.add(current_key)
+            expanded.append(current)
+
+            indexed_dataset = dataset_index.get(current_dataset_id)
+            if not indexed_dataset:
+                continue
+            _owner_workspace_id, dataset_metadata = indexed_dataset
+            for upstream in dataset_metadata.get("upstreamDatasets") or []:
+                if not isinstance(upstream, dict):
+                    continue
+                upstream_dataset_id = str(upstream.get("targetDatasetId") or "").strip()
+                if not upstream_dataset_id:
+                    continue
+                indexed_upstream = dataset_index.get(upstream_dataset_id)
+                upstream_workspace_id = (
+                    upstream.get("groupId")
+                    or (indexed_upstream or (None, None))[0]
+                )
+                upstream_context = dict(primary)
+                upstream_context.update({
+                    "Dataset ID": upstream_dataset_id,
+                    "Semantic Model Workspace ID": upstream_workspace_id,
+                    "Target Workspace ID": upstream_workspace_id,
+                    "Semantic Workspace Name": (
+                        (workspace_index.get(str(upstream_workspace_id)) or {}).get("name")
+                        if upstream_workspace_id
+                        else None
+                    ),
+                    "Semantic Model Name": (
+                        (indexed_upstream or (None, {}))[1].get("name")
+                        if indexed_upstream
+                        else None
+                    ),
+                    "Model Role": "Upstream",
+                    "Lineage Depth": int(current.get("Lineage Depth") or 0) + 1,
+                    "Parent Dataset ID": current_dataset_id,
+                    "Semantic Workspace Resolution": "Admin workspace scan",
+                })
+                queue.append(upstream_context)
+
+    return expanded
+
+
+def _get_workspace_lineage_scan(headers, workspace_ids):
+    """Return a cached admin WorkspaceInfo lineage scan, or None without breaking callers."""
+    workspace_ids = sorted({
+        str(value).strip()
+        for value in workspace_ids or []
+        if str(value or "").strip()
+    })
+    if not workspace_ids:
+        return None
+
+    # WorkspaceInfo accepts at most 100 workspace IDs per scan request.
+    workspace_ids = workspace_ids[:100]
+    cache_marker = hashlib.md5("|".join(workspace_ids).encode("utf-8")).hexdigest()
+    cache_key = f"workspace_lineage_scan_v1_{cache_marker}"
+    if cache_key in st.session_state:
+        cached = st.session_state.get(cache_key)
+        return cached if isinstance(cached, dict) else None
+
+    url = "https://api.powerbi.com/v1.0/myorg/admin/workspaces/getInfo?lineage=true"
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"workspaces": workspace_ids},
+            timeout=30,
+        )
+        if response.status_code != 202:
+            st.session_state[cache_key] = False
+            return None
+        scan_id = response.json().get("id")
+        if not scan_id:
+            st.session_state[cache_key] = False
+            return None
+
+        status_url = f"https://api.powerbi.com/v1.0/myorg/admin/workspaces/scanStatus/{scan_id}"
+        status = "NotStarted"
+        for _attempt in range(8):
+            status_response = requests.get(status_url, headers=headers, timeout=30)
+            if status_response.status_code != 200:
+                break
+            status = str(status_response.json().get("status") or "")
+            if status.casefold() == "succeeded":
+                result_url = f"https://api.powerbi.com/v1.0/myorg/admin/workspaces/scanResult/{scan_id}"
+                result_response = requests.get(result_url, headers=headers, timeout=60)
+                if result_response.status_code == 200:
+                    result = result_response.json()
+                    st.session_state[cache_key] = result
+                    return result
+                break
+            if status.casefold() in {"failed", "cancelled"}:
+                break
+            time.sleep(0.5)
+    except (requests.RequestException, ValueError):
+        pass
+
+    st.session_state[cache_key] = False
+    return None
+
+
+def _expand_impact_model_contexts(contexts, headers):
+    """Resolve primary owners and include scanner-reported upstream models."""
+    normalized = [_normalize_model_context(context) for context in contexts or []]
+    workspace_ids = {
+        value
+        for context in normalized
+        for value in (_report_workspace_id(context), _semantic_workspace_id(context))
+        if value
+    }
+    inventory = st.session_state.get("accessible_lineage_inventory_v4")
+    if isinstance(inventory, dict):
+        workspace_ids.update(
+            workspace.get("id")
+            for workspace in inventory.get("workspaces") or []
+            if isinstance(workspace, dict) and workspace.get("id")
+        )
+    scan_result = _get_workspace_lineage_scan(headers, workspace_ids)
+    if scan_result:
+        normalized = _expand_contexts_from_workspace_scan(normalized, scan_result)
+    return [_resolve_model_context_owner(context, headers) for context in normalized]
 
 
 def resolve_workspace_for_dashboard(headers_spa, dashboard_id):
@@ -4569,47 +5087,60 @@ def get_object_info(headersSPA, workspace_id, dataset_id, access_token, workspac
                     )
             return lineage_data
 
-        query_tables = """
-            SELECT
-                [ID],
-                [Name]
-            FROM
-                $SYSTEM.TMSCHEMA_TABLES
-        """
-        xmla_tables = execute_xmla_query(cursor, query_tables)
+        table_columns = ["ID", "Name", "Lineage Tag"]
+        xmla_tables = execute_xmla_query(
+            cursor,
+            """
+                SELECT [ID], [Name], [LineageTag]
+                FROM $SYSTEM.TMSCHEMA_TABLES
+            """,
+        )
+        if xmla_tables is None:
+            table_columns = ["ID", "Name"]
+            xmla_tables = execute_xmla_query(
+                cursor,
+                """
+                    SELECT [ID], [Name]
+                    FROM $SYSTEM.TMSCHEMA_TABLES
+                """,
+            )
         if not xmla_tables:
             return lineage_data
 
         df_tables = pd.DataFrame.from_records(
             [tuple(row) for row in xmla_tables],
-            columns=["ID", "Name"]
+            columns=table_columns,
         )
 
-        query_partitions = """
-            SELECT
-                [TableID],
-                [Name] AS [PartitionName],
-                [QueryDefinition],
-                [SourceType]
-            FROM
-                $SYSTEM.TMSCHEMA_PARTITIONS
-        """
-        partition_columns = ["TableID", "Partition Name", "QueryDefinition", "Partition Source Type"]
-        xmla_partitions = execute_xmla_query(cursor, query_partitions)
-
-        # Some tenants/capacity versions may not expose SourceType in this DMV.
-        # Fall back to the safer 3-column query instead of returning no output.
-        if xmla_partitions is None:
-            query_partitions = """
-                SELECT
-                    [TableID],
-                    [Name] AS [PartitionName],
-                    [QueryDefinition]
-                FROM
-                    $SYSTEM.TMSCHEMA_PARTITIONS
+        partition_columns = [
+            "TableID", "Partition Name", "QueryDefinition",
+            "Partition Source Type", "ExpressionSourceID",
+        ]
+        xmla_partitions = execute_xmla_query(
+            cursor,
             """
+                SELECT [TableID], [Name], [QueryDefinition], [SourceType], [ExpressionSourceID]
+                FROM $SYSTEM.TMSCHEMA_PARTITIONS
+            """,
+        )
+        if xmla_partitions is None:
+            partition_columns = ["TableID", "Partition Name", "QueryDefinition", "Partition Source Type"]
+            xmla_partitions = execute_xmla_query(
+                cursor,
+                """
+                    SELECT [TableID], [Name], [QueryDefinition], [SourceType]
+                    FROM $SYSTEM.TMSCHEMA_PARTITIONS
+                """,
+            )
+        if xmla_partitions is None:
             partition_columns = ["TableID", "Partition Name", "QueryDefinition"]
-            xmla_partitions = execute_xmla_query(cursor, query_partitions)
+            xmla_partitions = execute_xmla_query(
+                cursor,
+                """
+                    SELECT [TableID], [Name], [QueryDefinition]
+                    FROM $SYSTEM.TMSCHEMA_PARTITIONS
+                """,
+            )
 
         if not xmla_partitions:
             return lineage_data
@@ -4621,6 +5152,20 @@ def get_object_info(headersSPA, workspace_id, dataset_id, access_token, workspac
 
         if "Partition Source Type" not in df_partitions.columns:
             df_partitions["Partition Source Type"] = "N/A"
+        if "ExpressionSourceID" not in df_partitions.columns:
+            df_partitions["ExpressionSourceID"] = None
+
+        expression_sources = {}
+        xmla_expressions = execute_xmla_query(
+            cursor,
+            """
+                SELECT [ID], [Name], [Expression]
+                FROM $SYSTEM.TMSCHEMA_EXPRESSIONS
+            """,
+        )
+        for expression_row in xmla_expressions or []:
+            expression_item = _row_to_dict(expression_row, ["ID", "Name", "Expression"])
+            expression_sources[expression_item.get("ID")] = expression_item
 
         if df_tables.empty or df_partitions.empty:
             return lineage_data
@@ -4640,6 +5185,15 @@ def get_object_info(headersSPA, workspace_id, dataset_id, access_token, workspac
 
             m_code = str(row.get('QueryDefinition') or "")
             source_info = _parse_power_query_source(m_code)
+            expression_item = expression_sources.get(row.get("ExpressionSourceID"))
+            if (
+                isinstance(expression_item, dict)
+                and source_info.get("Source Type") == "Unknown"
+            ):
+                expression_code = str(expression_item.get("Expression") or "")
+                expression_source_info = _parse_power_query_source(expression_code)
+                if expression_source_info.get("Source Type") != "Unknown":
+                    source_info = expression_source_info
 
             lineage_data.append({
                 "Source Workspace Name": workspace_name,
@@ -4647,6 +5201,11 @@ def get_object_info(headersSPA, workspace_id, dataset_id, access_token, workspac
                 "Power BI Table Name": model_table_name,
                 "Partition Name": _clean_source_value(row.get('Partition Name')),
                 "Partition Source Type": _clean_source_value(row.get('Partition Source Type')),
+                "Expression Source ID": _clean_source_value(row.get("ExpressionSourceID")),
+                "Expression Source Name": _clean_source_value(
+                    expression_item.get("Name") if isinstance(expression_item, dict) else None
+                ),
+                "Table Lineage Tag": _clean_source_value(row.get("Lineage Tag")),
                 **source_info,
             })
 
@@ -5112,10 +5671,23 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                     conn = None
 
         table_map = {}
+        table_lineage_tags = {}
         hidden_tables = set()
 
         if cursor:
             query_tables_attempts = [
+                (
+                    ["ID", "Name", "IsHidden", "LineageTag"],
+                    """
+                    SELECT
+                        [ID],
+                        [Name],
+                        [IsHidden],
+                        [LineageTag]
+                    FROM
+                        $SYSTEM.TMSCHEMA_TABLES
+                    """,
+                ),
                 (
                     ["ID", "Name", "IsHidden"],
                     """
@@ -5147,11 +5719,35 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                         table_name = item.get("Name")
                         is_hidden = str(item.get("IsHidden", "False")).strip().lower() in {"true", "1", "yes"}
                         table_map[table_id] = table_name
+                        table_lineage_tags[table_id] = item.get("LineageTag")
                         if is_hidden:
                             hidden_tables.add(table_id)
                     break
 
             column_query_attempts = [
+                (
+                    [
+                        "ID", "TableID", "ExplicitName", "InferredName", "ExplicitDataType", "InferredDataType",
+                        "IsHidden", "SourceColumn", "Type", "Expression", "LineageTag", "SourceLineageTag",
+                    ],
+                    """
+                    SELECT
+                        [ID],
+                        [TableID],
+                        [ExplicitName],
+                        [InferredName],
+                        [ExplicitDataType],
+                        [InferredDataType],
+                        [IsHidden],
+                        [SourceColumn],
+                        [Type],
+                        [Expression],
+                        [LineageTag],
+                        [SourceLineageTag]
+                    FROM
+                        $SYSTEM.TMSCHEMA_COLUMNS
+                    """,
+                ),
                 (
                     [
                         "ID", "TableID", "ExplicitName", "InferredName", "ExplicitDataType", "InferredDataType",
@@ -5257,9 +5853,25 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                         "Data Type": _powerbi_data_type_name(data_type),
                         "Source Column Name From Model": row_dict.get("SourceColumn", "N/A"),
                         "DAX Expression": column_expression if object_type == "CALC_COLUMN" else "N/A",
+                        "Table Lineage Tag": table_lineage_tags.get(table_id) or "N/A",
+                        "Lineage Tag": row_dict.get("LineageTag") or "N/A",
+                        "Source Lineage Tag": row_dict.get("SourceLineageTag") or "N/A",
                     })
 
             measure_query_attempts = [
+                (
+                    ["Name", "TableID", "Expression", "IsHidden", "LineageTag"],
+                    """
+                    SELECT
+                        [Name],
+                        [TableID],
+                        [Expression],
+                        [IsHidden],
+                        [LineageTag]
+                    FROM
+                        $SYSTEM.TMSCHEMA_MEASURES
+                    """,
+                ),
                 (
                     ["Name", "TableID", "Expression", "IsHidden"],
                     """
@@ -5307,6 +5919,9 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                         "Data Type": "Measure",
                         "Source Column Name From Model": "N/A",
                         "DAX Expression": item.get("Expression") or "",
+                        "Table Lineage Tag": table_lineage_tags.get(table_id) or "N/A",
+                        "Lineage Tag": item.get("LineageTag") or "N/A",
+                        "Source Lineage Tag": "N/A",
                     })
                 break
 
@@ -5330,6 +5945,9 @@ def get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, 
                 "Data Type": "Measure",
                 "Source Column Name From Model": "N/A",
                 "DAX Expression": measure.get("DAX Expression", ""),
+                "Table Lineage Tag": "N/A",
+                "Lineage Tag": "N/A",
+                "Source Lineage Tag": "N/A",
             })
 
         return objects
@@ -5552,9 +6170,10 @@ def _get_semantic_relationships_for_contexts(
     cache_prefix,
 ):
     rows = []
-    for context in contexts or []:
+    for raw_context in contexts or []:
+        context = _resolve_model_context_owner(raw_context, headersSPA)
         dataset_id = context.get("Dataset ID")
-        workspace_id = context.get("Target Workspace ID")
+        workspace_id = _semantic_workspace_id(context)
         if not dataset_id or not workspace_id:
             continue
         cache_key = f"{cache_prefix}_semantic_relationships_v1_{workspace_id}_{dataset_id}"
@@ -5565,7 +6184,7 @@ def _get_semantic_relationships_for_contexts(
                 workspace_id,
                 dataset_id,
                 xmla_token,
-                workspace_name_hint=context.get("Workspace"),
+                workspace_name_hint=_semantic_workspace_name_hint(context),
                 dataset_name_hint=context.get("Semantic Model Name"),
                 auth_headers=[("MasterUser", headersSPA)],
             )
@@ -5578,6 +6197,11 @@ def _get_semantic_relationships_for_contexts(
                     "Source Report": context.get("Source Report"),
                     "Report ID": context.get("Report ID"),
                     "Dataset ID": dataset_id,
+                    "Primary Dataset ID": context.get("Primary Dataset ID"),
+                    "Report Workspace ID": context.get("Report Workspace ID"),
+                    "Semantic Model Workspace ID": workspace_id,
+                    "Model Role": context.get("Model Role"),
+                    "Lineage Depth": context.get("Lineage Depth"),
                     **relationship,
                 })
     return rows
@@ -5596,6 +6220,7 @@ def render_semantic_model_relationships_view(
         st.info("Select at least one report first.")
         return []
 
+    contexts = _expand_impact_model_contexts(contexts, headersSPA)
     rows = _get_semantic_relationships_for_contexts(
         contexts,
         headersSPA,
@@ -5610,7 +6235,9 @@ def render_semantic_model_relationships_view(
         return []
 
     requested_columns = [
-        "Workspace", "Source Report", "Dataset ID", "Semantic Model Name",
+        "Workspace", "Source Report", "Report Workspace ID", "Dataset ID",
+        "Primary Dataset ID", "Semantic Model Workspace ID", "Model Role",
+        "Lineage Depth", "Semantic Model Name",
         "From Table", "From Column", "To Table", "To Column", "Active",
         "Cross Filter Direction", "From Cardinality", "To Cardinality",
     ]
@@ -5659,29 +6286,40 @@ def _build_report_details_export(
     manually uploaded for the current report.
     """
     cache_prefix = f"{scope_key}_details_export"
-    source_rows = _get_source_lineage_for_context(
-        context,
-        headersSPA,
-        xmla_token,
-        cache_prefix,
-        auth_headers=[("MasterUser", headersSPA)],
-    )
+    model_contexts = _expand_impact_model_contexts([context], headersSPA)
+    source_rows = []
+    for model_context in model_contexts:
+        for source_row in _get_source_lineage_for_context(
+            model_context,
+            headersSPA,
+            xmla_token,
+            cache_prefix,
+            auth_headers=[("MasterUser", headersSPA)],
+        ):
+            source_rows.append({
+                "Dataset ID": model_context.get("Dataset ID"),
+                "Primary Dataset ID": model_context.get("Primary Dataset ID"),
+                "Semantic Model Workspace ID": _semantic_workspace_id(model_context),
+                "Model Role": model_context.get("Model Role"),
+                "Lineage Depth": model_context.get("Lineage Depth"),
+                **source_row,
+            })
     semantic_rows = _get_semantic_objects_for_contexts(
-        [context],
+        model_contexts,
         headersSPA,
         headersSP,
         xmla_token,
         cache_prefix,
     )
     relationship_rows = _get_semantic_relationships_for_contexts(
-        [context],
+        model_contexts,
         headersSPA,
         headersSP,
         xmla_token,
         cache_prefix,
     )
     measure_rows = _get_measure_lineage_rows_for_contexts(
-        [context],
+        model_contexts,
         headersSPA,
         xmla_token,
         cache_prefix,
@@ -5692,7 +6330,10 @@ def _build_report_details_export(
         key: context.get(key)
         for key in (
             "Workspace", "Source Report", "Report ID", "Dataset ID",
-            "Target Workspace ID", "Report Type", "Report Format",
+            "Primary Dataset ID", "Report Workspace ID",
+            "Semantic Model Workspace ID", "Semantic Model Name",
+            "Model Role", "Lineage Depth", "Target Workspace ID",
+            "Report Type", "Report Format",
         )
     }
     availability = {
@@ -5805,7 +6446,7 @@ def build_workspace_report_contexts(selected_art_keys, artifact_mapping):
     contexts = []
     for art_key in selected_art_keys:
         item = artifact_mapping[art_key]
-        contexts.append({
+        contexts.append(_normalize_model_context({
             "Context Key": art_key,
             "Scope Type": "Workspace",
             "Container Name": item.get("Workspace Name"),
@@ -5814,10 +6455,21 @@ def build_workspace_report_contexts(selected_art_keys, artifact_mapping):
             "Source Report": item.get("Name"),
             "Report ID": item.get("ID"),
             "Dataset ID": item.get("Dataset ID"),
-            "Target Workspace ID": item.get("Workspace ID"),
+            "Dataset Workspace ID": item.get("Dataset Workspace ID"),
+            "Report Workspace ID": item.get("Workspace ID"),
+            "Report Workspace": item.get("Workspace Name"),
+            "Semantic Model Workspace ID": item.get("Dataset Workspace ID") or item.get("Workspace ID"),
+            "Target Workspace ID": item.get("Dataset Workspace ID") or item.get("Workspace ID"),
+            "Semantic Workspace Resolution": (
+                "Report inventory"
+                if item.get("Dataset Workspace ID")
+                else "Report workspace fallback"
+            ),
+            "Model Role": "Primary",
+            "Lineage Depth": 0,
             "Report Type": item.get("Type"),
             "Report Format": item.get("Format"),
-        })
+        }))
     return contexts
 
 
@@ -5831,7 +6483,7 @@ def build_app_report_contexts(selected_art_keys, app_art_mapping, headersSPA):
             st.session_state[cache_key] = resolve_dataset_for_app_report(headersSPA, original_id)
         dataset_id, target_workspace_id = st.session_state.get(cache_key, (None, None))
 
-        contexts.append({
+        contexts.append(_normalize_model_context({
             "Context Key": art_key,
             "Scope Type": "App",
             "Container Name": item.get("App Name"),
@@ -5840,24 +6492,32 @@ def build_app_report_contexts(selected_art_keys, app_art_mapping, headersSPA):
             "Source Report": item.get("Name"),
             "Report ID": original_id,
             "Dataset ID": dataset_id,
+            "Primary Dataset ID": dataset_id,
+            "Report Workspace ID": item.get("Workspace ID"),
+            "Report Workspace": item.get("Workspace Name"),
+            "Semantic Model Workspace ID": target_workspace_id,
             "Target Workspace ID": target_workspace_id,
+            "Semantic Workspace Resolution": "Admin report lookup",
+            "Model Role": "Primary",
+            "Lineage Depth": 0,
             "Report Type": item.get("Type"),
             "Report Format": item.get("Format"),
-        })
+        }))
     return contexts
 
 
 def _get_semantic_objects_for_contexts(contexts, headersSPA, headersSP, xmla_token, cache_prefix):
     rows = []
-    for context in contexts:
+    for raw_context in contexts:
+        context = _resolve_model_context_owner(raw_context, headersSPA)
         dataset_id = context.get("Dataset ID")
-        workspace_id = context.get("Target Workspace ID")
+        workspace_id = _semantic_workspace_id(context)
         if not dataset_id:
             continue
 
         cache_key = f"{cache_prefix}_semantic_objects_v24_{workspace_id}_{dataset_id}"
         if cache_key not in st.session_state:
-            st.session_state[cache_key] = get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, xmla_token, workspace_name_hint=context.get("Workspace") if context.get("Scope Type") == "Workspace" else None, dataset_name_hint=context.get("Semantic Model Name"), auth_headers=[("MasterUser", headersSPA)])
+            st.session_state[cache_key] = get_semantic_model_objects(headersSPA, headersSP, workspace_id, dataset_id, xmla_token, workspace_name_hint=_semantic_workspace_name_hint(context), dataset_name_hint=context.get("Semantic Model Name"), auth_headers=[("MasterUser", headersSPA)])
 
         for obj in st.session_state.get(cache_key, []) or []:
             rows.append({
@@ -5868,14 +6528,20 @@ def _get_semantic_objects_for_contexts(contexts, headersSPA, headersSP, xmla_tok
                 "Source Report": context.get("Source Report"),
                 "Report ID": context.get("Report ID"),
                 "Dataset ID": dataset_id,
+                "Primary Dataset ID": context.get("Primary Dataset ID"),
+                "Report Workspace ID": context.get("Report Workspace ID"),
+                "Semantic Model Workspace ID": workspace_id,
+                "Model Role": context.get("Model Role"),
+                "Lineage Depth": context.get("Lineage Depth"),
                 **obj,
             })
     return rows
 
 
 def _get_source_lineage_for_context(context, headersSPA, xmla_token, cache_prefix, auth_headers=None):
+    context = _resolve_model_context_owner(context, headersSPA)
     dataset_id = context.get("Dataset ID")
-    workspace_id = context.get("Target Workspace ID")
+    workspace_id = _semantic_workspace_id(context)
     if not dataset_id or not workspace_id:
         return []
 
@@ -5886,7 +6552,7 @@ def _get_source_lineage_for_context(context, headersSPA, xmla_token, cache_prefi
             workspace_id,
             dataset_id,
             xmla_token,
-            workspace_name_hint=context.get("Workspace") if context.get("Scope Type") == "Workspace" else None,
+            workspace_name_hint=_semantic_workspace_name_hint(context),
             dataset_name_hint=context.get("Semantic Model Name"),
             auth_headers=auth_headers,
         )
@@ -8641,16 +9307,25 @@ def render_source_db_lineage_records(records, empty_message, download_key=None):
         "Source Dashboard",
         "Report ID",
         "Dataset ID",
+        "Primary Dataset ID",
+        "Report Workspace ID",
+        "Semantic Model Workspace ID",
+        "Model Role",
+        "Lineage Depth",
         "Source Workspace Name",
         "Semantic Model Name",
         "Power BI Table Name",
         "Partition Name",
         "Partition Source Type",
+        "Expression Source Name",
+        "Table Lineage Tag",
         "Source Server",
         "Source Database",
         "Source Schema",
         "Source Name",
         "Source Type",
+        "Upstream Semantic Model",
+        "Upstream Workspace Endpoint",
         "Query",
         "Native Query Columns",
         "Fully Qualified Name",
@@ -8683,8 +9358,10 @@ def render_source_db_lineage_view(contexts, headersSPA, xmla_token, cache_prefix
         st.info("Select at least one report first.")
         return []
 
+    contexts = _expand_impact_model_contexts(contexts, headersSPA)
     rows = []
-    for context in contexts:
+    for raw_context in contexts:
+        context = _resolve_model_context_owner(raw_context, headersSPA)
         source_rows = _get_source_lineage_for_context(
             context,
             headersSPA,
@@ -8701,6 +9378,11 @@ def render_source_db_lineage_view(contexts, headersSPA, xmla_token, cache_prefix
                     "Source Report": context.get("Source Report"),
                     "Report ID": context.get("Report ID"),
                     "Dataset ID": context.get("Dataset ID"),
+                    "Primary Dataset ID": context.get("Primary Dataset ID"),
+                    "Report Workspace ID": context.get("Report Workspace ID"),
+                    "Semantic Model Workspace ID": _semantic_workspace_id(context),
+                    "Model Role": context.get("Model Role"),
+                    "Lineage Depth": context.get("Lineage Depth"),
                     **source_row,
                 })
 
@@ -8713,15 +9395,16 @@ def render_source_db_lineage_view(contexts, headersSPA, xmla_token, cache_prefix
 
 def _get_measure_lineage_rows_for_contexts(contexts, headersSPA, xmla_token, cache_prefix):
     rows = []
-    for context in contexts:
+    for raw_context in contexts:
+        context = _resolve_model_context_owner(raw_context, headersSPA)
         dataset_id = context.get("Dataset ID")
-        workspace_id = context.get("Target Workspace ID")
+        workspace_id = _semantic_workspace_id(context)
         if not dataset_id or not workspace_id:
             continue
 
         cache_key = f"{cache_prefix}_measure_lineage_v24_{workspace_id}_{dataset_id}"
         if cache_key not in st.session_state:
-            st.session_state[cache_key] = get_raw_measure_dependencies(headersSPA, workspace_id, dataset_id, xmla_token, workspace_name_hint=context.get("Workspace") if context.get("Scope Type") == "Workspace" else None, dataset_name_hint=context.get("Semantic Model Name"), auth_headers=[("MasterUser", headersSPA)])
+            st.session_state[cache_key] = get_raw_measure_dependencies(headersSPA, workspace_id, dataset_id, xmla_token, workspace_name_hint=_semantic_workspace_name_hint(context), dataset_name_hint=context.get("Semantic Model Name"), auth_headers=[("MasterUser", headersSPA)])
 
         measure_lineage_df = st.session_state.get(cache_key)
         if measure_lineage_df is None or getattr(measure_lineage_df, "empty", True):
@@ -8740,6 +9423,11 @@ def _get_measure_lineage_rows_for_contexts(contexts, headersSPA, xmla_token, cac
                 "Source Report": context.get("Source Report"),
                 "Report ID": context.get("Report ID"),
                 "Dataset ID": dataset_id,
+                "Primary Dataset ID": context.get("Primary Dataset ID"),
+                "Report Workspace ID": context.get("Report Workspace ID"),
+                "Semantic Model Workspace ID": workspace_id,
+                "Model Role": context.get("Model Role"),
+                "Lineage Depth": context.get("Lineage Depth"),
                 "Semantic Workspace Name": source_details.get("Semantic Workspace Name", "N/A"),
                 "Semantic Model Name": source_details.get("Semantic Model Name", "N/A"),
                 "Target Object Type": row.get("Target Object Type", row.get("Semantic Object Type", "N/A")),
@@ -8790,6 +9478,7 @@ def render_semantic_model_objects_view(contexts, headersSPA, headersSP, xmla_tok
         st.info("Select at least one report first.")
         return []
 
+    contexts = _expand_impact_model_contexts(contexts, headersSPA)
     rows = _get_semantic_objects_for_contexts(contexts, headersSPA, headersSP, xmla_token, cache_prefix)
     if not rows:
         st.info("No semantic model columns/measures found. Check XMLA permissions or dataset access.")
@@ -8802,6 +9491,11 @@ def render_semantic_model_objects_view(contexts, headersSPA, headersSP, xmla_tok
         "Source Report",
         "Report ID",
         "Dataset ID",
+        "Primary Dataset ID",
+        "Report Workspace ID",
+        "Semantic Model Workspace ID",
+        "Model Role",
+        "Lineage Depth",
         "Semantic Workspace Name",
         "Semantic Model Name",
         "Semantic Table/View",
@@ -8809,6 +9503,9 @@ def render_semantic_model_objects_view(contexts, headersSPA, headersSP, xmla_tok
         "Semantic Object Name",
         "Data Type",
         "Source Column Name From Model",
+        "Table Lineage Tag",
+        "Lineage Tag",
+        "Source Lineage Tag",
         "DAX Expression",
     ]
 
@@ -8831,6 +9528,7 @@ def render_measure_source_lineage_view(contexts, headersSPA, xmla_token, cache_p
         st.info("Select at least one report first.")
         return []
 
+    contexts = _expand_impact_model_contexts(contexts, headersSPA)
     rows = _get_measure_lineage_rows_for_contexts(contexts, headersSPA, xmla_token, cache_prefix)
     if not rows:
         st.info("No measure-to-source-column lineage found. Measures may not exist, XMLA may be blocked, or lineage DMV may not expose dependencies.")
@@ -8843,6 +9541,11 @@ def render_measure_source_lineage_view(contexts, headersSPA, xmla_token, cache_p
         "Source Report",
         "Report ID",
         "Dataset ID",
+        "Primary Dataset ID",
+        "Report Workspace ID",
+        "Semantic Model Workspace ID",
+        "Model Role",
+        "Lineage Depth",
         "Semantic Workspace Name",
         "Semantic Model Name",
         "Target Object Type",
@@ -8939,7 +9642,7 @@ def _impact_visual_layout_records(context, powerbi_headers, fabric_headers=None)
         return usable_cached_records, "Cached report definition", None
 
     report_id = context.get("Report ID")
-    workspace_id = context.get("Target Workspace ID")
+    workspace_id = _report_workspace_id(context)
     if not report_id or not workspace_id:
         return [], "Unavailable", "Workspace ID or report ID could not be resolved."
     if str(context.get("Report Type") or "").casefold() == "paginatedreport":
@@ -9028,12 +9731,15 @@ def _build_table_impact_analysis(
     xmla_token,
     fabric_headers=None,
 ):
-    contexts = [direct_report_context(record) for record in records]
+    contexts = _expand_impact_model_contexts(
+        [direct_report_context(record) for record in records],
+        headersSPA,
+    )
     model_groups = {}
     skipped_reports = 0
     for context in contexts:
         dataset_id = str(context.get("Dataset ID") or "").strip()
-        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        workspace_id = str(_semantic_workspace_id(context) or "").strip()
         if not dataset_id or not workspace_id:
             skipped_reports += 1
             continue
@@ -9167,9 +9873,16 @@ def _build_table_impact_analysis(
 
                 report_rows.append({
                     "Workspace": context.get("Workspace"),
+                    "Report Workspace ID": context.get("Report Workspace ID"),
                     "Report": context.get("Source Report"),
                     "Report ID": context.get("Report ID"),
                     "Dataset ID": context.get("Dataset ID"),
+                    "Primary Dataset ID": context.get("Primary Dataset ID"),
+                    "Semantic Model": context.get("Semantic Model Name"),
+                    "Semantic Model Workspace": context.get("Semantic Workspace Name"),
+                    "Semantic Model Workspace ID": _semantic_workspace_id(context),
+                    "Model Role": context.get("Model Role"),
+                    "Lineage Depth": context.get("Lineage Depth"),
                     "Affected Measure Count": len(model_measure_names),
                     "Affected Measures": "; ".join(model_measure_names) or "N/A",
                     "Usage Basis": (
@@ -9192,9 +9905,16 @@ def _build_table_impact_analysis(
                     visual_details = _visual_details_for_measure(visual_rows, measure_name)
                     measure_rows.append({
                         "Workspace": context.get("Workspace"),
+                        "Report Workspace ID": context.get("Report Workspace ID"),
                         "Report": context.get("Source Report"),
                         "Report ID": context.get("Report ID"),
                         "Dataset ID": context.get("Dataset ID"),
+                        "Primary Dataset ID": context.get("Primary Dataset ID"),
+                        "Semantic Model": context.get("Semantic Model Name"),
+                        "Semantic Model Workspace": context.get("Semantic Workspace Name"),
+                        "Semantic Model Workspace ID": _semantic_workspace_id(context),
+                        "Model Role": context.get("Model Role"),
+                        "Lineage Depth": context.get("Lineage Depth"),
                         "Measure": measure_name,
                         "Measure Home Table": dependency_row.get("Target Table/View"),
                         "DAX Expression": dependency_row.get("Target Expression"),
@@ -9246,6 +9966,11 @@ def _build_table_impact_analysis(
         "include_partial": include_partial,
         "reports_scanned": len(records),
         "models_scanned": len(model_groups),
+        "upstream_models_scanned": len({
+            (context.get("Semantic Model Workspace ID"), context.get("Dataset ID"))
+            for context in contexts
+            if context.get("Model Role") == "Upstream"
+        }),
         "skipped_reports": skipped_reports,
         "affected_models": len(affected_model_keys),
         "affected_reports": len(report_df),
@@ -9257,6 +9982,180 @@ def _build_table_impact_analysis(
         "visual_errors": visual_errors,
         "errors": scan_errors,
     }
+
+
+def _query_impact_suggestion_names(headers, dataset_id, object_kind):
+    """Return semantic table or measure names without surfacing per-model UI errors."""
+    if not dataset_id or object_kind not in {"table", "measure"}:
+        return []
+    if object_kind == "table":
+        query = "SELECT [TABLE_NAME] FROM $SYSTEM.DBSCHEMA_TABLES WHERE [TABLE_TYPE] = 'TABLE'"
+        value_key = "TABLE_NAME"
+    else:
+        query = "SELECT [MEASURE_NAME] FROM $SYSTEM.MDSCHEMA_MEASURES"
+        value_key = "MEASURE_NAME"
+
+    url = f"https://api.powerbi.com/v1.0/myorg/datasets/{dataset_id}/executeQueries"
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"queries": [{"query": query}]},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return []
+        rows = (
+            response.json()
+            .get("results", [{}])[0]
+            .get("tables", [{}])[0]
+            .get("rows", [])
+        )
+    except (requests.RequestException, ValueError, IndexError, AttributeError):
+        return []
+
+    names = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get(value_key)
+        if value is None:
+            value = next(
+                (
+                    item_value
+                    for item_key, item_value in row.items()
+                    if str(item_key).strip("[]").casefold() == value_key.casefold()
+                ),
+                None,
+            )
+        name = str(value or "").strip().lstrip("$").replace("'", "")
+        if not name or _is_internal_semantic_name(name):
+            continue
+        if object_kind == "measure" and (name.startswith("__") or name == "FormatString"):
+            continue
+        names.append(name)
+    return names
+
+
+def _cached_source_table_suggestion_names():
+    """Reuse source-table names from lineage already retrieved in this session."""
+    names = set()
+    for key, value in st.session_state.items():
+        if "_source_lineage_v24_" not in str(key) or not isinstance(value, list):
+            continue
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            for field in (
+                "Power BI Table Name",
+                "Source Name",
+                "Fully Qualified Name",
+                "Upstream Semantic Model",
+            ):
+                candidate = str(row.get(field) or "").strip()
+                if _is_meaningful_value(candidate):
+                    names.add(candidate)
+    return names
+
+
+def _impact_suggestion_catalog(records, headers, object_kind):
+    """Build a cached, multi-model catalogue for live impact-search suggestions."""
+    contexts = _expand_impact_model_contexts(
+        [direct_report_context(record) for record in records or []],
+        headers,
+    )
+    dataset_ids = sorted({
+        str(context.get("Dataset ID") or "").strip()
+        for context in contexts
+        if str(context.get("Dataset ID") or "").strip()
+    })
+    names = set()
+    for dataset_id in dataset_ids:
+        cache_key = f"impact_suggestion_names_v1_{object_kind}_{dataset_id}"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = _query_impact_suggestion_names(
+                headers,
+                dataset_id,
+                object_kind,
+            )
+        names.update(st.session_state.get(cache_key) or [])
+    if object_kind == "table":
+        names.update(_cached_source_table_suggestion_names())
+    return sorted(
+        {
+            str(name).strip()
+            for name in names
+            if str(name or "").strip()
+        },
+        key=str.casefold,
+    )
+
+
+def _impact_name_suggestions(query, candidates, limit=8):
+    """Rank deterministic type-ahead suggestions from authorized metadata names."""
+    requested = re.sub(r"\s+", " ", str(query or "").strip()).casefold()
+    if not requested:
+        return []
+
+    unique_candidates = {}
+    for value in candidates or []:
+        candidate = str(value or "").strip()
+        marker = re.sub(r"\s+", " ", candidate).casefold()
+        if marker:
+            unique_candidates.setdefault(marker, candidate)
+
+    ranked = []
+    for marker, candidate in unique_candidates.items():
+        words = re.split(r"[\s._:/\\-]+", marker)
+        if marker == requested:
+            score = (0, 0)
+        elif marker.startswith(requested):
+            score = (1, 0)
+        elif any(word.startswith(requested) for word in words):
+            score = (2, 0)
+        elif requested in marker:
+            score = (3, marker.index(requested))
+        elif len(requested) >= 3:
+            ratio = max(
+                difflib.SequenceMatcher(None, requested, marker).ratio(),
+                max(
+                    (difflib.SequenceMatcher(None, requested, word).ratio() for word in words),
+                    default=0,
+                ),
+            )
+            if ratio < 0.55:
+                continue
+            score = (4, 1 - ratio)
+        else:
+            continue
+        ranked.append((score, candidate.casefold(), candidate))
+
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    safe_limit = max(1, min(12, int(limit or 8)))
+    return [candidate for _score, _sort, candidate in ranked[:safe_limit]]
+
+
+def _render_impact_typeahead(label, query_key, candidates, placeholder):
+    """Render a searchable dropdown while still allowing manual object names."""
+    options = list(candidates or [])
+    query = st.selectbox(
+        label,
+        options=options,
+        index=None,
+        key=query_key,
+        placeholder=placeholder,
+        accept_new_options=True,
+        filter_mode="fuzzy",
+    )
+    if query:
+        match_count = len(_impact_name_suggestions(query, options, limit=12))
+        if match_count:
+            st.caption(f"Dropdown suggestions come from {len(options)} authorized metadata name(s).")
+        elif options:
+            st.caption("Custom value entered. Run an exact or partial-name search to scan it.")
+        else:
+            st.caption("Custom value entered. Suggestions are unavailable for the currently authorized models.")
+    return query
 
 
 def render_table_impact_analysis_view(records, headersSPA, headersSP, xmla_token):
@@ -9271,26 +10170,32 @@ def render_table_impact_analysis_view(records, headersSPA, headersSP, xmla_token
         if record.get("Workspace Name")
     }, key=str.casefold)
 
-    with st.form("table_impact_analysis_form", border=True):
-        table_query = st.text_input(
+    with st.spinner("Loading table-name suggestions..."):
+        table_candidates = _impact_suggestion_catalog(records, headersSP, "table")
+
+    with st.container(border=True):
+        table_query = _render_impact_typeahead(
             "Table name",
-            placeholder="Example: FACT_SALES or DATABASE.SCHEMA.FACT_SALES",
+            "table_impact_query",
+            table_candidates,
+            placeholder="Type or select a table, e.g. FACT_SALES or DATABASE.SCHEMA.FACT_SALES",
         )
-        selected_workspaces = st.multiselect(
-            "Workspace scope",
-            options=workspace_options,
-            default=workspace_options,
-        )
-        include_partial = st.toggle(
-            "Include partial-name matches",
-            value=False,
-            help="Use only when the exact semantic table or qualified source table name is unknown.",
-        )
-        submitted = st.form_submit_button(
-            "Run impact analysis",
-            type="primary",
-            use_container_width=True,
-        )
+        with st.form("table_impact_analysis_form", border=False):
+            selected_workspaces = st.multiselect(
+                "Workspace scope",
+                options=workspace_options,
+                default=workspace_options,
+            )
+            include_partial = st.toggle(
+                "Include partial-name matches",
+                value=False,
+                help="Use only when the exact semantic table or qualified source table name is unknown.",
+            )
+            submitted = st.form_submit_button(
+                "Run impact analysis",
+                type="primary",
+                use_container_width=True,
+            )
 
     if submitted:
         normalized_query = str(table_query or "").strip()
@@ -9326,6 +10231,7 @@ def render_table_impact_analysis_view(records, headersSPA, headersSP, xmla_token
     st.caption(
         f"Visual-confirmed reports: {result.get('visual_confirmed_reports', 0)} of {result.get('affected_reports', 0)}. "
         f"Visual metadata inspected: {result.get('visual_metadata_reports', 0)} report(s). "
+        f"Upstream semantic models scanned: {result.get('upstream_models_scanned', 0)}. "
         "Affected reports are model-level dependencies; visual confirmation is based on parsed report-definition fields."
     )
     if result.get("affected_reports") and not result.get("visual_metadata_reports"):
@@ -9491,12 +10397,15 @@ def _build_measure_impact_analysis(
     xmla_token,
     fabric_headers=None,
 ):
-    contexts = [direct_report_context(record) for record in records]
+    contexts = _expand_impact_model_contexts(
+        [direct_report_context(record) for record in records],
+        headersSPA,
+    )
     model_groups = {}
     skipped_reports = 0
     for context in contexts:
         dataset_id = str(context.get("Dataset ID") or "").strip()
-        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        workspace_id = str(_semantic_workspace_id(context) or "").strip()
         if not dataset_id or not workspace_id:
             skipped_reports += 1
             continue
@@ -9635,9 +10544,16 @@ def _build_measure_impact_analysis(
 
                 report_rows.append({
                     "Workspace": context.get("Workspace"),
+                    "Report Workspace ID": context.get("Report Workspace ID"),
                     "Report": context.get("Source Report"),
                     "Report ID": context.get("Report ID"),
                     "Dataset ID": context.get("Dataset ID"),
+                    "Primary Dataset ID": context.get("Primary Dataset ID"),
+                    "Semantic Model": context.get("Semantic Model Name"),
+                    "Semantic Model Workspace": context.get("Semantic Workspace Name"),
+                    "Semantic Model Workspace ID": _semantic_workspace_id(context),
+                    "Model Role": context.get("Model Role"),
+                    "Lineage Depth": context.get("Lineage Depth"),
                     "Matching Measure Count": len(model_measure_names),
                     "Matching Measures": "; ".join(model_measure_names),
                     "Usage Basis": "Measure exists in connected semantic model",
@@ -9655,9 +10571,16 @@ def _build_measure_impact_analysis(
                         dependency_row = dependency_row or {}
                         lineage_rows.append({
                             "Workspace": context.get("Workspace"),
+                            "Report Workspace ID": context.get("Report Workspace ID"),
                             "Report": context.get("Source Report"),
                             "Report ID": context.get("Report ID"),
                             "Dataset ID": context.get("Dataset ID"),
+                            "Primary Dataset ID": context.get("Primary Dataset ID"),
+                            "Semantic Model": context.get("Semantic Model Name"),
+                            "Semantic Model Workspace": context.get("Semantic Workspace Name"),
+                            "Semantic Model Workspace ID": _semantic_workspace_id(context),
+                            "Model Role": context.get("Model Role"),
+                            "Lineage Depth": context.get("Lineage Depth"),
                             "Measure": metadata.get("name"),
                             "Measure Home Table": _prefer_non_na(
                                 dependency_row.get("Target Table/View"),
@@ -9714,6 +10637,11 @@ def _build_measure_impact_analysis(
         "include_partial": include_partial,
         "reports_scanned": len(records),
         "models_scanned": len(model_groups),
+        "upstream_models_scanned": len({
+            (context.get("Semantic Model Workspace ID"), context.get("Dataset ID"))
+            for context in contexts
+            if context.get("Model Role") == "Upstream"
+        }),
         "skipped_reports": skipped_reports,
         "affected_models": len(affected_model_keys),
         "affected_reports": len(report_df),
@@ -9743,26 +10671,32 @@ def render_measure_impact_analysis_view(records, headersSPA, headersSP, xmla_tok
         if record.get("Workspace Name")
     }, key=str.casefold)
 
-    with st.form("measure_impact_analysis_form", border=True):
-        measure_query = st.text_input(
+    with st.spinner("Loading measure-name suggestions..."):
+        measure_candidates = _impact_suggestion_catalog(records, headersSP, "measure")
+
+    with st.container(border=True):
+        measure_query = _render_impact_typeahead(
             "Measure name",
-            placeholder="Example: Total Sales",
+            "measure_impact_query",
+            measure_candidates,
+            placeholder="Type or select a measure, e.g. Total Sales",
         )
-        selected_workspaces = st.multiselect(
-            "Workspace scope",
-            options=workspace_options,
-            default=workspace_options,
-        )
-        include_partial = st.toggle(
-            "Include partial-name matches",
-            value=False,
-            help="Use this to find multiple measures when the exact measure name is unknown.",
-        )
-        submitted = st.form_submit_button(
-            "Run measure impact analysis",
-            type="primary",
-            use_container_width=True,
-        )
+        with st.form("measure_impact_analysis_form", border=False):
+            selected_workspaces = st.multiselect(
+                "Workspace scope",
+                options=workspace_options,
+                default=workspace_options,
+            )
+            include_partial = st.toggle(
+                "Include partial-name matches",
+                value=False,
+                help="Use this to find multiple measures when the exact measure name is unknown.",
+            )
+            submitted = st.form_submit_button(
+                "Run measure impact analysis",
+                type="primary",
+                use_container_width=True,
+            )
 
     if submitted:
         normalized_query = str(measure_query or "").strip()
@@ -9799,6 +10733,7 @@ def render_measure_impact_analysis_view(records, headersSPA, headersSP, xmla_tok
     st.caption(
         f"Visual-confirmed reports: {result.get('visual_confirmed_reports', 0)} of {result.get('affected_reports', 0)}. "
         f"Visual metadata inspected: {result.get('visual_metadata_reports', 0)} report(s). "
+        f"Upstream semantic models scanned: {result.get('upstream_models_scanned', 0)}. "
         "Affected reports are connected to a model containing the measure; visual confirmation is based on parsed report-definition fields."
     )
     if result.get("affected_reports") and not result.get("visual_metadata_reports"):
@@ -10058,10 +10993,13 @@ def _build_claude_agent_estate_index(
     if isinstance(cached, dict):
         return cached
 
-    contexts = [direct_report_context(record) for record in records or []]
+    contexts = _expand_impact_model_contexts(
+        [direct_report_context(record) for record in records or []],
+        headersSPA,
+    )
     model_groups = {}
     for context in contexts:
-        workspace_id = str(context.get("Target Workspace ID") or "").strip()
+        workspace_id = str(_semantic_workspace_id(context) or "").strip()
         dataset_id = str(context.get("Dataset ID") or "").strip()
         if workspace_id and dataset_id:
             model_groups.setdefault((workspace_id, dataset_id), []).append(context)
@@ -10073,6 +11011,7 @@ def _build_claude_agent_estate_index(
             "Report Name": record.get("Report Name"),
             "Report ID": record.get("Report ID"),
             "Dataset ID": record.get("Dataset ID"),
+            "Dataset Workspace ID": record.get("Dataset Workspace ID"),
             "Report Type": record.get("Report Type"),
             "Report Format": record.get("Report Format"),
         }
@@ -11139,8 +12078,8 @@ def render_claude_lineage_agent_page(
                     use_container_width=True,
                     key=refresh_key,
                 ):
-                    st.session_state.pop("accessible_lineage_inventory_v3", None)
-                    st.session_state.pop("direct_lookup_report_records_v2", None)
+                    st.session_state.pop("accessible_lineage_inventory_v4", None)
+                    st.session_state.pop("direct_lookup_report_records_v3", None)
                     st.session_state.pop("claude_home_featured_reports_v1", None)
                     _clear_claude_agent_estate_indexes()
                     st.rerun()
@@ -11788,7 +12727,11 @@ def _normalize_layout_records_for_context(records, context, report_id):
             "App Name": context.get("App Name"),
             "Source Report": context.get("Source Report"),
             "Report ID": report_id,
-            "Dataset ID": context.get("Dataset ID"),
+            # Visuals bind to the report's primary semantic model. Upstream model
+            # contexts are used for lineage scans, not to rewrite that binding.
+            "Dataset ID": context.get("Primary Dataset ID") or context.get("Dataset ID"),
+            "Report Workspace ID": _report_workspace_id(context),
+            "Semantic Model Workspace ID": _semantic_workspace_id(context),
             **record,
         }
         for record in records or []
@@ -11799,7 +12742,7 @@ def _normalize_layout_records_for_context(records, context, report_id):
 def _automatic_layout_attempt_key(scope_key, context, source_name):
     return (
         f"{scope_key}_automatic_layout_v2_{source_name}_"
-        f"{context.get('Target Workspace ID')}_{context.get('Report ID')}"
+        f"{_report_workspace_id(context)}_{context.get('Report ID')}"
     )
 
 
@@ -11826,7 +12769,7 @@ def render_upload_only_report_layout_view(
 
     for context in contexts:
         report_id = context.get("Report ID")
-        workspace_id = context.get("Target Workspace ID")
+        workspace_id = _report_workspace_id(context)
         existing_records = get_uploaded_layout_records(scope_key, report_id)
         attempt_key = _automatic_layout_attempt_key(scope_key, context, source_name)
 
@@ -12033,15 +12976,18 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
         st.info("Select at least one report first.")
         return []
 
-    layout_records = get_uploaded_layout_records_for_contexts(scope_key, contexts)
+    report_contexts = contexts
+    model_contexts = _expand_impact_model_contexts(contexts, headersSPA)
+    layout_records = get_uploaded_layout_records_for_contexts(scope_key, report_contexts)
 
     if not layout_records:
         st.warning("Retrieve or upload a report definition in the 'Report Layout' tab first.")
         return []
 
-    semantic_rows = _get_semantic_objects_for_contexts(contexts, headersSPA, headersSP, xmla_token, cache_prefix)
+    semantic_rows = _get_semantic_objects_for_contexts(model_contexts, headersSPA, headersSP, xmla_token, cache_prefix)
     semantic_lookup = {}
     semantic_lookup_by_name = {}
+    lineage_tag_lookup = {}
     for row in semantic_rows:
         dataset_id = row.get("Dataset ID")
         object_type = _semantic_dependency_type(row.get("Object Type"))
@@ -12052,6 +12998,9 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
             object_type,
         )
         semantic_lookup[key] = row
+        lineage_tag = str(row.get("Lineage Tag") or "").strip().casefold()
+        if lineage_tag and lineage_tag not in {"n/a", "none"}:
+            lineage_tag_lookup.setdefault(lineage_tag, []).append(row)
         for candidate_name in [
             row.get("Semantic Object Name"),
             row.get("Measure Name"),
@@ -12064,7 +13013,7 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
 
     source_lookup_by_dataset = {}
     dependency_lineage_by_dataset_object = {}
-    for context in contexts:
+    for context in model_contexts:
         dataset_id = context.get("Dataset ID")
         if not dataset_id:
             continue
@@ -12111,6 +13060,7 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
             "Semantic_Object_Name": semantic_object,
             "Semantic_Object_Type": object_type,
             "Source_Query": visual.get("Query Reference", "N/A"),
+            "Primary_Dataset_ID": dataset_id,
         }
 
         dependency_lines = []
@@ -12182,11 +13132,26 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
                 if semantic_row:
                     break
 
+        source_semantic_row = semantic_row
+        source_dataset_id = dataset_id
+        source_lineage_tag = str(semantic_row.get("Source Lineage Tag") or "").strip().casefold()
+        tag_matches = [
+            row
+            for row in lineage_tag_lookup.get(source_lineage_tag, [])
+            if row.get("Dataset ID") != dataset_id
+        ] if source_lineage_tag and source_lineage_tag not in {"n/a", "none"} else []
+        if tag_matches:
+            source_semantic_row = tag_matches[0]
+            source_dataset_id = source_semantic_row.get("Dataset ID") or dataset_id
+            match_method = (
+                f"{match_method}; upstream object matched by SourceLineageTag"
+            )
+
         source_details = _enrich_with_source_details(
-            semantic_row,
+            source_semantic_row,
             matched_table,
             matched_object,
-            source_lookup_by_dataset.get(dataset_id, {}),
+            source_lookup_by_dataset.get(source_dataset_id, {}),
         )
         lookup_rows.append({
             **common,
@@ -12195,6 +13160,9 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
             "Semantic_Object_Type": matched_type,
             "Matched_Semantic_Table": matched_table,
             "Matched_Semantic_Object_Name": matched_object,
+            "Matched_Dataset_ID": source_dataset_id,
+            "Matched_Semantic_Model": source_semantic_row.get("Semantic Model Name", "N/A"),
+            "Matched_Model_Role": source_semantic_row.get("Model Role", "N/A"),
             "Match_Method": match_method,
             "Source_Query": _prefer_non_na(source_details.get("Query"), common.get("Source_Query")),
             "Source_Object_Type": source_details.get("Exact Source Object Type", "N/A"),
@@ -12228,8 +13196,12 @@ def render_visual_source_lookup_view(contexts, headersSPA, headersSP, xmla_token
         "Semantic_Tables",
         "Semantic_Object_Name",
         "Semantic_Object_Type",
+        "Primary_Dataset_ID",
         "Matched_Semantic_Table",
         "Matched_Semantic_Object_Name",
+        "Matched_Dataset_ID",
+        "Matched_Semantic_Model",
+        "Matched_Model_Role",
         "Match_Method",
         "Source_Query",
         "Source_Object_Type",
@@ -12493,6 +13465,60 @@ st.markdown(
             text-transform: uppercase;
             letter-spacing: 0;
             padding: 0 0.7rem 0.45rem 0.7rem;
+        }
+        section[data-testid="stSidebar"] .lineage-nav-link {
+            display: grid;
+            grid-template-columns: 1.25rem minmax(0, 1fr);
+            align-items: center;
+            column-gap: 0.65rem;
+            min-height: 44px;
+            margin: 0.12rem 0;
+            padding: 0.55rem 0.75rem;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            color: #52627a !important;
+            box-shadow: none;
+            font-size: 0.93rem;
+            font-weight: 650;
+            text-decoration: none !important;
+        }
+        section[data-testid="stSidebar"] .lineage-nav-link:hover {
+            border-color: #dbe7f8;
+            background: #eef4fc;
+            color: #12346b !important;
+            text-decoration: none !important;
+        }
+        section[data-testid="stSidebar"] .lineage-nav-link.is-active {
+            border-color: #d7e4f7;
+            background: #e5edf9;
+            color: #12346b !important;
+            box-shadow: inset 3px 0 0 #2563eb;
+        }
+        section[data-testid="stSidebar"] .lineage-nav-icon {
+            width: 1.25rem;
+            min-width: 1.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-family: "Material Symbols Rounded", "Material Symbols Outlined";
+            font-size: 1.05rem;
+            font-weight: normal;
+            font-style: normal;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            white-space: nowrap;
+            direction: ltr;
+            font-feature-settings: "liga";
+            -webkit-font-feature-settings: "liga";
+            -webkit-font-smoothing: antialiased;
+        }
+        section[data-testid="stSidebar"] .lineage-nav-text {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         section[data-testid="stSidebar"] div.stButton {
             margin: 0.12rem 0;
@@ -13157,6 +14183,9 @@ if not check_authenticated_session(logout_and_clear_session):
     render_login_page(clear_streamlit_session_state, get_all_tokens)
     st.stop()
 
+_hydrate_shared_app_state()
+apply_workflow_query_params()
+
 headersMU = {'Authorization': f"Bearer {st.session_state.auth_bundle['mu']}", 'Content-Type': 'application/json'}
 headersSP = headersMU
 headersSPA = headersMU
@@ -13179,6 +14208,8 @@ if workflow_mode not in {
     workflow_mode = "landing"
     st.session_state.workflow_mode = workflow_mode
 
+_set_browser_title(workflow_mode)
+
 if workflow_mode == "landing":
     def _render_landing_main():
         render_workflow_choice_page(
@@ -13198,6 +14229,7 @@ if workflow_mode == "landing":
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
+    _persist_shared_app_state()
     st.stop()
 
 if workflow_mode == "report_lineage":
@@ -13228,6 +14260,7 @@ if workflow_mode == "report_lineage":
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
+    _persist_shared_app_state()
     st.stop()
 
 if workflow_mode == "table_impact":
@@ -13251,6 +14284,7 @@ if workflow_mode == "table_impact":
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
+    _persist_shared_app_state()
     st.stop()
 
 if workflow_mode == "measure_impact":
@@ -13274,6 +14308,7 @@ if workflow_mode == "measure_impact":
         logout_and_clear_session=logout_and_clear_session,
         clear_streamlit_session_state=clear_streamlit_session_state,
     )
+    _persist_shared_app_state()
     st.stop()
 
 st.session_state.workflow_mode = "guided"
@@ -13370,6 +14405,7 @@ if st.session_state.auth_bundle:
                                     'Type': r.get('reportType'),
                                     'Format': r.get('format'),
                                     'Dataset ID': r.get('datasetId'),
+                                    'Dataset Workspace ID': r.get('datasetWorkspaceId'),
                                     'Embed URL': r.get('embedUrl')
                                 } for r in raw_reports]
 
@@ -13778,6 +14814,7 @@ if st.session_state.auth_bundle:
                                     'Original ID': r.get('originalReportObjectId') or r.get('id'),
                                     'Workspace ID': r.get('workspaceId'),
                                     'Dataset ID': r.get('datasetId'),
+                                    'Dataset Workspace ID': r.get('datasetWorkspaceId'),
                                     'Embed URL': r.get('embedUrl')
                                 } for r in raw_reports]
 
@@ -14143,3 +15180,5 @@ if st.session_state.auth_bundle:
                         )
 else:
     st.warning("Please use the top Login button to authenticate and retrieve access tokens.")
+
+_persist_shared_app_state()
