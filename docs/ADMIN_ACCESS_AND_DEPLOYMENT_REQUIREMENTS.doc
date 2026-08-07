@@ -1,0 +1,75 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Calibri Light;}}
+{\colortbl;\red31\green78\blue121;\red89\green89\blue89;\red0\green102\blue51;}
+\paperw12240\paperh15840\margl1080\margr1080\margt900\margb900
+\viewkind4\uc1
+
+\pard\qc\sa180\f1\fs36\b\cf1 Administrator Access and Deployment Prerequisites\par
+\pard\qc\sa240\f0\fs22\b0\cf2 Power BI Lineage Explorer\par
+
+\pard\sa120\f0\fs22\cf0
+\b Purpose\b0\par
+Please provision or confirm the following accounts, permissions, infrastructure, and configuration before the application is deployed. All access should follow least-privilege and organizational security policies. Passwords, private keys, and API keys must be delivered through the approved secret-management system and must not be entered directly in this document.\par
+
+\pard\sa160\fs26\b\cf1 1. Power BI Premium Per User Account\b0\cf0\par
+\pard\sa80\fs22 A Power BI account with a Premium Per User license is required for report inventory, semantic-model inspection, report-definition retrieval, XMLA queries, and lineage analysis.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide a dedicated Power BI user account, or approve the named application user account.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Assign a Microsoft Power BI Premium Per User license to the account.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Grant access to every required report workspace and every workspace containing a connected or upstream semantic model.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Grant Build and Read access to the required semantic models. Contributor or higher workspace access may be required when report-definition export or detailed metadata retrieval is used.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm that tenant settings permit the required Power BI and Fabric API operations, report-definition or PBIX download where applicable, XMLA endpoint access, and cross-workspace semantic-model discovery.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide the Microsoft Entra tenant ID and account UPN through the approved configuration process.\par
+\pard\sa80\fs22\b Acceptance check:\b0 The account can sign in, list the authorized workspaces and reports, read required semantic models, and retrieve available report-definition and XMLA metadata.\par
+
+\pard\sa160\fs26\b\cf1 2. Snowflake Service Account and Object-Creation Access\b0\cf0\par
+\pard\sa80\fs22 A Snowflake service account is required for source-data lineage, metadata queries, and creation of approved application database objects.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Create a dedicated non-personal Snowflake service account. Key-pair authentication or an approved secret-vault integration is preferred.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Create or assign a least-privilege Snowflake role for the application.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide USAGE on the required warehouse, database, and schema.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Grant the role the approved CREATE privileges needed for application objects, such as tables, views, procedures, and functions, within a designated application schema.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Grant read access to the required source metadata, information schema views, and lineage-related objects.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm network policy, firewall, DNS, and allow-list access from the Windows deployment server to the Snowflake account.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide the account identifier, authentication method, role, warehouse, database, schema, and approved secret location.\par
+\pard\sa80\fs22\b Acceptance check:\b0 The service account can connect from the deployment host, query authorized metadata, and create the approved objects inside the designated application schema.\par
+
+\pard\sa160\fs26\b\cf1 3. Windows Deployment Dependencies\b0\cf0\par
+\pard\sa80\fs22 The application requires a supported Windows environment because XMLA and certain Power BI semantic-model operations depend on Windows components.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide a supported 64-bit Windows Server or Windows host for deployment.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Install a supported 64-bit Python runtime and the project dependencies. Python 3.11 is the current project baseline.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Install the required Microsoft Analysis Services or MSOLAP provider and Windows Python integration dependencies used for XMLA access.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Create or approve a Windows service account with permission to run the application and read its secured configuration.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Allow outbound HTTPS access to Microsoft Entra, Power BI, Fabric, Snowflake, and Anthropic endpoints.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Configure corporate TLS certificates or an approved CA bundle when HTTPS inspection is enabled. Certificate verification must remain enabled.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Approve the application port or reverse-proxy configuration and configure automatic startup, logging, monitoring, and restart behavior.\par
+\pard\sa80\fs22\b Acceptance check:\b0 The application starts under the approved Windows service account, reaches all external services, and can load the MSOLAP/XMLA dependencies without errors.\par
+
+\pard\sa160\fs26\b\cf1 4. Claude Configuration and Session-Linked Agents\b0\cf0\par
+\pard\sa80\fs22 Claude access is required for the application's PowerAI analysis and agent-assisted lineage features.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide an approved Anthropic or Claude API key through the organization's secret-management system.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm the target environment, such as Development, Test, UAT, or Production, and provide the environment-specific configuration.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm the approved Claude model, API endpoint if organization-specific, usage limits, rate limits, and cost controls.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide or approve the agent definitions, agent names, roles, instructions, and tools enabled for the environment.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm which agents must be linked to each user session and how the session-to-agent mapping is persisted, expired, and audited.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Confirm that session isolation prevents one user's conversation, cached lineage information, or agent state from appearing in another user's session.\par
+\pard\li360\fi-180\sa60\fs22 \bullet\tab Provide the secret names or vault references used by the application. Do not send the API key in email, chat, tickets, or this document.\par
+\pard\sa80\fs22\b Acceptance check:\b0 The application can initialize the approved Claude model, create or resolve the configured agents, retain them for the correct session, and isolate agent state between users.\par
+
+\pard\sa180\fs26\b\cf1 Administrator Completion Checklist\b0\cf0\par
+\pard\li180\sa60\fs22 [ ] Power BI PPU account and license assigned\par
+\pard\li180\sa60\fs22 [ ] Power BI/Fabric tenant settings and workspace permissions confirmed\par
+\pard\li180\sa60\fs22 [ ] Snowflake service account, role, warehouse, database, and schema provisioned\par
+\pard\li180\sa60\fs22 [ ] Snowflake object-creation and metadata-read privileges validated\par
+\pard\li180\sa60\fs22 [ ] Windows deployment host and service account prepared\par
+\pard\li180\sa60\fs22 [ ] Python, MSOLAP/XMLA, certificates, network access, and application hosting configured\par
+\pard\li180\sa60\fs22 [ ] Claude key stored securely and environment configuration approved\par
+\pard\li180\sa60\fs22 [ ] Claude agents and session-linking rules approved and validated\par
+
+\pard\sa160\fs22\b Administrator / Owner:\b0 ______________________________________________\par
+\pard\sa100\fs22\b Environment:\b0 ______________________________________________\par
+\pard\sa100\fs22\b Completion Date:\b0 ______________________________________________\par
+\pard\sa100\fs22\b Change / Ticket Reference:\b0 ______________________________________________\par
+\pard\sa180\fs22\b Notes:\b0\par
+\pard\sa80\fs22 ____________________________________________________________________________\par
+\pard\sa80\fs22 ____________________________________________________________________________\par
+\pard\sa80\fs22 ____________________________________________________________________________\par
+}

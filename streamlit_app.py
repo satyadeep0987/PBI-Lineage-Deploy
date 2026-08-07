@@ -199,7 +199,7 @@ _SHARED_APP_STATE_CONTAINS = (
     "_measure_lineage_v24_",
     "_semantic_relationships_v1_",
     "_uploaded_layout_records_",
-    "_automatic_layout_v2_",
+    "_automatic_layout_v3_",
     "_details_export_bytes",
     "_recursive_snowflake_lineage_result",
     "_snowflake_lineage_payload",
@@ -2416,21 +2416,105 @@ def _json_literal_to_text(value):
     return str(value)
 
 
+def _pbir_projection_label(projection):
+    """Return the readable field label Power BI uses when it builds an automatic visual title."""
+    if not isinstance(projection, dict):
+        return ""
+
+    label = (
+        projection.get("nativeQueryRef")
+        or projection.get("NativeQueryRef")
+        or projection.get("queryRef")
+        or projection.get("QueryRef")
+    )
+    text = _clean_layout_text(label, default="")
+    if not text:
+        return ""
+
+    # queryRef commonly includes the semantic table while nativeQueryRef contains
+    # the user-facing field label. Remove only the table qualifier fallback.
+    if not projection.get("nativeQueryRef") and not projection.get("NativeQueryRef") and "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.strip("[]'\" ")
+
+
+def _infer_pbir_visual_title(visual_json):
+    """Build a stable readable name when PBIR relies on Power BI's automatic title."""
+    if not isinstance(visual_json, dict):
+        return ""
+
+    visual = visual_json.get("visual", {}) if isinstance(visual_json.get("visual"), dict) else visual_json
+    query = visual.get("query", {}) if isinstance(visual, dict) else {}
+    query_state = query.get("queryState") or query.get("QueryState") or visual.get("queryState") or {}
+    if not isinstance(query_state, dict):
+        return ""
+
+    labels_by_role = {}
+    all_labels = []
+    for role_name, role_value in query_state.items():
+        role_obj = role_value if isinstance(role_value, dict) else {}
+        projections = role_obj.get("projections") or role_obj.get("Projections") or []
+        if isinstance(projections, dict):
+            projections = list(projections.values())
+
+        role_labels = []
+        for projection in projections if isinstance(projections, list) else []:
+            label = _pbir_projection_label(projection)
+            if label and label not in role_labels:
+                role_labels.append(label)
+            if label and label not in all_labels:
+                all_labels.append(label)
+        if role_labels:
+            labels_by_role[str(role_name).casefold()] = role_labels
+
+    if not all_labels:
+        return ""
+
+    visual_type = str(visual.get("visualType") or visual.get("type") or "").casefold()
+    flat_visual_types = ("table", "matrix", "slicer", "card", "textbox")
+    if any(marker in visual_type for marker in flat_visual_types):
+        return ", ".join(all_labels)
+
+    value_roles = ("indicator", "y", "y2", "values", "value", "data", "size")
+    category_roles = ("trendline", "category", "categories", "axis", "x", "series", "legend", "group")
+    values = []
+    categories = []
+    for role in value_roles:
+        for label in labels_by_role.get(role, []):
+            if label not in values:
+                values.append(label)
+    for role in category_roles:
+        for label in labels_by_role.get(role, []):
+            if label not in categories and label not in values:
+                categories.append(label)
+
+    if values and categories:
+        return f"{', '.join(values)} by {', '.join(categories)}"
+    return ", ".join(values or categories or all_labels)
+
+
 def _extract_pbir_visual_title(visual_json, visual_id):
     """Best-effort title extraction from PBIR visual JSON."""
     direct_title = visual_json.get("displayName") or visual_json.get("title")
     if direct_title:
-        return _clean_layout_text(direct_title, default=visual_id)
+        title_text = _json_literal_to_text(direct_title)
+        if title_text:
+            return _clean_layout_text(title_text, default=visual_id)
 
     visual = visual_json.get("visual", {}) if isinstance(visual_json.get("visual"), dict) else visual_json
-    objects = visual.get("objects", {}) if isinstance(visual, dict) else {}
-    title_obj = objects.get("title") if isinstance(objects, dict) else None
-
     candidates = []
-    if isinstance(title_obj, list):
-        candidates.extend(title_obj)
-    elif isinstance(title_obj, dict):
-        candidates.append(title_obj)
+    object_containers = [
+        visual.get("visualContainerObjects"),
+        visual_json.get("visualContainerObjects"),
+        visual.get("objects"),
+        visual_json.get("objects"),
+    ]
+    for objects in object_containers:
+        title_obj = objects.get("title") if isinstance(objects, dict) else None
+        if isinstance(title_obj, list):
+            candidates.extend(title_obj)
+        elif isinstance(title_obj, dict):
+            candidates.append(title_obj)
 
     # Newer PBIR files can store properties in nested dictionaries or lists.
     for candidate in candidates:
@@ -2447,7 +2531,10 @@ def _extract_pbir_visual_title(visual_json, visual_id):
             if text_value:
                 return text_value
 
-    return _clean_layout_text(visual_id, default="Untitled / hidden title")
+    inferred_title = _infer_pbir_visual_title(visual_json)
+    if inferred_title:
+        return inferred_title
+    return "Untitled / hidden title"
 
 
 def _extract_source_entity_from_expression(expression):
@@ -9452,7 +9539,7 @@ def _get_measure_lineage_rows_for_contexts(contexts, headersSPA, xmla_token, cac
 
 
 def _layout_session_key(scope_key, report_id):
-    return f"{scope_key}_uploaded_layout_records_{report_id}"
+    return f"{scope_key}_uploaded_layout_records_{report_id}_visual_names_v2"
 
 
 def get_uploaded_layout_records(scope_key, report_id):
@@ -12741,7 +12828,7 @@ def _normalize_layout_records_for_context(records, context, report_id):
 
 def _automatic_layout_attempt_key(scope_key, context, source_name):
     return (
-        f"{scope_key}_automatic_layout_v2_{source_name}_"
+        f"{scope_key}_automatic_layout_v3_{source_name}_"
         f"{_report_workspace_id(context)}_{context.get('Report ID')}"
     )
 
