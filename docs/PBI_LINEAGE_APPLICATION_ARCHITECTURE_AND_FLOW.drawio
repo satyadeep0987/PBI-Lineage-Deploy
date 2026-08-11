@@ -1,0 +1,625 @@
+<mxfile host="app.diagrams.net" agent="Codex" compressed="false" pages="4">
+  <diagram id="architecture-overview" name="1 - Architecture Overview">
+    <mxGraphModel dx="818" dy="456" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" background="#F4F7FB" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="a-title" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontSize=30;fontColor=#10213D;" value="&lt;b&gt;Power BI Lineage Explorer — End-to-End Architecture&lt;/b&gt;" vertex="1">
+          <mxGeometry height="45" width="1200" x="50" y="25" as="geometry" />
+        </mxCell>
+        <mxCell id="a-subtitle" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontSize=15;fontColor=#5B6B85;" value="Authenticated Streamlit experience that joins Power BI, Fabric report definitions, XMLA semantic metadata, optional Snowflake lineage, and bounded PowerAI analysis." vertex="1">
+          <mxGeometry height="35" width="1750" x="50" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="a-user" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=14;spacing=10;" value="&lt;b&gt;BI user / report owner&lt;/b&gt;&lt;br&gt;Search • select • inspect • ask • download" vertex="1">
+          <mxGeometry height="105" width="205" x="55" y="175" as="geometry" />
+        </mxCell>
+        <mxCell id="a-browser" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=13;spacing=9;" value="&lt;b&gt;Browser&lt;/b&gt;&lt;br&gt;Streamlit WebSocket&lt;br&gt;Opaque app cookie&lt;br&gt;URL workflow parameters" vertex="1">
+          <mxGeometry height="125" width="220" x="320" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="a-ui" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=3;fontColor=#10213D;fontSize=14;spacing=10;" value="&lt;b&gt;Streamlit application shell&lt;/b&gt;&lt;br&gt;Home • Explore • Report Lineage&lt;br&gt;Table Impact • Measure Impact&lt;br&gt;PowerAI floating modal" vertex="1">
+          <mxGeometry height="165" width="280" x="600" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="a-auth-container" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#FFF8E7;swimlaneFillColor=#FFFFFF;strokeColor=#F59E0B;strokeWidth=2;fontColor=#7C4A03;fontSize=15;" value="&lt;b&gt;Identity, session, and cache&lt;/b&gt;" vertex="1">
+          <mxGeometry height="300" width="595" x="285" y="365" as="geometry" />
+        </mxCell>
+        <mxCell id="a-auth" parent="a-auth-container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;fontColor=#5D3A00;fontSize=13;spacing=8;" value="&lt;b&gt;MSAL delegated Master User&lt;/b&gt;&lt;br&gt;Device-code/public-client sign-in" vertex="1">
+          <mxGeometry height="75" width="250" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a-tokens" parent="a-auth-container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;fontColor=#5D3A00;fontSize=12;spacing=8;" value="&lt;b&gt;Server-side token bundle&lt;/b&gt;&lt;br&gt;Power BI token: REST + Admin + ExecuteQueries + XMLA&lt;br&gt;Separate Fabric-audience token: getDefinition" vertex="1">
+          <mxGeometry height="95" width="270" x="300" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a-cache" parent="a-auth-container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D69E00;fontColor=#5D3A00;fontSize=12;spacing=8;" value="&lt;b&gt;Browser-scoped server state&lt;/b&gt;&lt;br&gt;Authentication registry + session_state cache&lt;br&gt;Inventory, report context, lineage, layouts, suggestions&lt;br&gt;New tabs reuse cached data; tokens never enter URLs" vertex="1">
+          <mxGeometry height="90" width="550" x="20" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="a-entra" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#3B176B;fontSize=13;spacing=8;" value="&lt;b&gt;Microsoft Entra ID&lt;/b&gt;&lt;br&gt;Account consent&lt;br&gt;Power BI + Fabric audiences" vertex="1">
+          <mxGeometry height="110" width="190" x="55" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="a-services" parent="1" style="swimlane;html=1;rounded=1;startSize=36;fillColor=#EAF8F1;swimlaneFillColor=#FFFFFF;strokeColor=#059669;strokeWidth=2;fontColor=#065F46;fontSize=16;" value="&lt;b&gt;Application-owned lineage services&lt;/b&gt;" vertex="1">
+          <mxGeometry height="650" width="450" x="940" y="125" as="geometry" />
+        </mxCell>
+        <mxCell id="a-inventory" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Inventory and access&lt;/b&gt;&lt;br&gt;Workspaces • reports • dashboards • Apps • users" vertex="1">
+          <mxGeometry height="85" width="195" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a-context" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Report/model context resolver&lt;/b&gt;&lt;br&gt;Report workspace ≠ semantic-model workspace&lt;br&gt;Primary + upstream datasets, role, depth, provenance" vertex="1">
+          <mxGeometry height="105" width="195" x="235" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a-reportdef" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Visual definition service&lt;/b&gt;&lt;br&gt;Fabric getDefinition → PBIR parser&lt;br&gt;PBIX Export / page API / manual upload fallback" vertex="1">
+          <mxGeometry height="105" width="195" x="20" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="a-xmla" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;XMLA semantic lineage&lt;/b&gt;&lt;br&gt;Tables • columns • measures • DAX&lt;br&gt;Relationships • partitions • dependencies • M / SQL" vertex="1">
+          <mxGeometry height="105" width="195" x="235" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="a-impact" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Lineage join + impact engines&lt;/b&gt;&lt;br&gt;Visual ↔ semantic ↔ DAX ↔ physical source&lt;br&gt;Table impact • measure impact • report export" vertex="1">
+          <mxGeometry height="90" width="410" x="20" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="a-snowservice" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFFB;strokeColor=#0F766E;fontColor=#134E4A;fontSize=12;spacing=8;" value="&lt;b&gt;Optional Snowflake lineage&lt;/b&gt;&lt;br&gt;Object + column trace • recursive graph • metadata" vertex="1">
+          <mxGeometry height="85" width="195" x="20" y="425" as="geometry" />
+        </mxCell>
+        <mxCell id="a-powerai" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;PowerAI local tool executor&lt;/b&gt;&lt;br&gt;Authorized scope • read-only allowlist&lt;br&gt;Bounded evidence • routing • cost guard" vertex="1">
+          <mxGeometry height="100" width="195" x="235" y="425" as="geometry" />
+        </mxCell>
+        <mxCell id="a-outputservice" parent="a-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Presentation and export&lt;/b&gt;&lt;br&gt;Normalized tables • interactive lineage graphs • CSV • ZIP • answer-only Markdown" vertex="1">
+          <mxGeometry height="70" width="410" x="20" y="550" as="geometry" />
+        </mxCell>
+        <mxCell id="a-platforms" parent="1" style="swimlane;html=1;rounded=1;startSize=36;fillColor=#EEF2FF;swimlaneFillColor=#FFFFFF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#312E81;fontSize=16;" value="&lt;b&gt;Connected platforms&lt;/b&gt;" vertex="1">
+          <mxGeometry height="650" width="410" x="1450" y="125" as="geometry" />
+        </mxCell>
+        <mxCell id="a-pbirest" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4F46E5;fontColor=#312E81;fontSize=12;spacing=8;" value="&lt;b&gt;Power BI REST + Admin APIs&lt;/b&gt;&lt;br&gt;Inventory, access, Apps, ExecuteQueries&lt;br&gt;Workspace Scanner lineage" vertex="1">
+          <mxGeometry height="90" width="360" x="25" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="a-fabric" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=12;spacing=8;" value="&lt;b&gt;Fabric REST API&lt;/b&gt;&lt;br&gt;Get Report Definition (PBIR / PBIR-Legacy)" vertex="1">
+          <mxGeometry height="75" width="360" x="25" y="165" as="geometry" />
+        </mxCell>
+        <mxCell id="a-xmlaplatform" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Power BI XMLA endpoint&lt;/b&gt;&lt;br&gt;Windows + pywin32 + ADO COM + MSOLAP" vertex="1">
+          <mxGeometry height="80" width="360" x="25" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="a-snowflake" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFFB;strokeColor=#0F766E;fontColor=#134E4A;fontSize=12;spacing=8;" value="&lt;b&gt;Snowflake&lt;/b&gt;&lt;br&gt;Configured metadata and lineage procedures" vertex="1">
+          <mxGeometry height="75" width="360" x="25" y="360" as="geometry" />
+        </mxCell>
+        <mxCell id="a-anthropic" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Anthropic Claude&lt;/b&gt;&lt;br&gt;Direct Messages API or Managed Agent session&lt;br&gt;Receives bounded metadata only—never credentials" vertex="1">
+          <mxGeometry height="90" width="360" x="25" y="455" as="geometry" />
+        </mxCell>
+        <mxCell id="a-security" parent="a-platforms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#64748B;dashed=1;fontColor=#334155;fontSize=11;spacing=7;" value="&lt;b&gt;Security boundary&lt;/b&gt;&lt;br&gt;All connector calls and tool execution stay inside the application. PowerAI is read-only and permission-scoped." vertex="1">
+          <mxGeometry height="60" width="360" x="25" y="565" as="geometry" />
+        </mxCell>
+        <mxCell id="a-results" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10213D;strokeColor=#10213D;strokeWidth=2;fontColor=#FFFFFF;fontSize=14;spacing=12;" value="&lt;b&gt;What the user receives&lt;/b&gt;&lt;br&gt;Workspace/report/access inventory • semantic objects • relationships • source DB lineage • measure/DAX dependencies • visual field usage • cross-workspace model context • impact results • Snowflake graph • grounded PowerAI answer • CSV/ZIP/Markdown downloads" vertex="1">
+          <mxGeometry height="145" width="790" x="600" y="835" as="geometry" />
+        </mxCell>
+        <mxCell id="a-note" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Deployment note:&lt;/b&gt; REST/Fabric, visual parsing, downloads, and PowerAI are cloud-safe. XMLA semantic lineage requires the Windows MSOLAP execution path (or a separate Windows backend)." vertex="1">
+          <mxGeometry height="95" width="485" x="55" y="860" as="geometry" />
+        </mxCell>
+        <mxCell id="ae1" edge="1" parent="1" source="a-user" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="a-browser">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae2" edge="1" parent="1" source="a-browser" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="a-ui">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae3" edge="1" parent="1" source="a-ui" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="a-auth" value="sign in">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="740" y="340" />
+              <mxPoint x="430" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae4" edge="1" parent="1" source="a-auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="a-entra" value="device code">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae5" edge="1" parent="1" source="a-auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="a-tokens" value="tokens">
+          <mxGeometry relative="1" x="-0.25" y="-7" as="geometry">
+            <mxPoint x="7" y="-7" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae6" edge="1" parent="1" source="a-ui" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#059669;strokeWidth=3;endArrow=block;endFill=1;fontSize=11;" target="a-services" value="authorized requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae7" edge="1" parent="1" source="a-cache" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#D69E00;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="a-ui" value="restore / reuse">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="410" />
+              <mxPoint x="740" y="410" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae8" edge="1" parent="1" source="a-inventory" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=block;endFill=1;" target="a-pbirest">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1057.5" y="170" />
+              <mxPoint x="1380" y="170" />
+              <mxPoint x="1380" y="225" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae9" edge="1" parent="1" source="a-context" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=block;endFill=1;" target="a-pbirest">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1390" y="225" />
+              <mxPoint x="1390" y="225" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae10" edge="1" parent="1" source="a-reportdef" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" target="a-fabric">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1057.5" y="293" />
+              <mxPoint x="1420" y="293" />
+              <mxPoint x="1420" y="327.5" />
+            </Array>
+            <mxPoint x="1057.5" y="298" as="sourcePoint" />
+            <mxPoint x="1470" y="333" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae11" edge="1" parent="1" source="a-xmla" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#EA580C;strokeWidth=2;endArrow=block;endFill=1;" target="a-xmlaplatform">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae12" edge="1" parent="1" source="a-snowservice" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#0F766E;strokeWidth=2;dashed=1;endArrow=block;endFill=1;entryX=-0.011;entryY=0.347;entryDx=0;entryDy=0;entryPerimeter=0;" target="a-snowflake">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1057.5" y="540" />
+              <mxPoint x="1420" y="540" />
+              <mxPoint x="1420" y="511" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ae13" edge="1" parent="1" source="a-powerai" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#EA580C;strokeWidth=2;dashed=1;endArrow=block;endFill=1;fontSize=11;" target="a-anthropic" value="bounded tool evidence">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae14" edge="1" parent="1" source="a-outputservice" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#10213D;strokeWidth=3;endArrow=block;endFill=1;" target="a-results">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ae15" edge="1" parent="1" source="a-results" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="a-browser" value="render">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="907.5" />
+              <mxPoint x="1420" y="1010" />
+              <mxPoint x="30" y="1010" />
+              <mxPoint x="30" y="320" />
+              <mxPoint x="430" y="320" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="navigation-flow" name="2 - Navigation and Tabs">
+    <mxGraphModel dx="2046" dy="1140" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" background="#F4F7FB" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="n-title" parent="1" style="text;html=1;align=left;fontSize=30;fontColor=#10213D;" value="&lt;b&gt;User Navigation, Tab Purpose, and Returned Output&lt;/b&gt;" vertex="1">
+          <mxGeometry height="45" width="1300" x="45" y="25" as="geometry" />
+        </mxCell>
+        <mxCell id="n-sub" parent="1" style="text;html=1;align=left;fontSize=14;fontColor=#5B6B85;" value="Follow the sidebar from left to right below. Normal click stays in the current tab; browser right-click / Ctrl-click / middle-click can open the same route in a new tab and reuse browser-scoped cached metadata." vertex="1">
+          <mxGeometry height="35" width="1800" x="45" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n-start" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=14;" value="&lt;b&gt;Open application&lt;/b&gt;" vertex="1">
+          <mxGeometry height="70" width="165" x="23" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="n-authq" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;strokeWidth=2;fontColor=#5D3A00;fontSize=12;" value="Authenticated session available?" vertex="1">
+          <mxGeometry height="100" width="180" x="258" y="115" as="geometry" />
+        </mxCell>
+        <mxCell id="n-login" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;fontColor=#5D3A00;fontSize=12;spacing=8;" value="&lt;b&gt;Login page&lt;/b&gt;&lt;br&gt;1. Start sign-in&lt;br&gt;2. Open Microsoft device login&lt;br&gt;3. Enter code&lt;br&gt;4. Return and confirm" vertex="1">
+          <mxGeometry height="130" width="220" x="238" y="238" as="geometry" />
+        </mxCell>
+        <mxCell id="n-homeentry" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=14;" value="&lt;b&gt;Home&lt;/b&gt;&lt;br&gt;Default authenticated route" vertex="1">
+          <mxGeometry height="70" width="190" x="520" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="n-sidebar" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#E8F0FE;swimlaneFillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=15;" value="&lt;b&gt;Authenticated sidebar navigation&lt;/b&gt;" vertex="1">
+          <mxGeometry height="145" width="1090" x="770" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-home" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;fontColor=#10213D;fontSize=13;" value="Home" vertex="1">
+          <mxGeometry height="55" width="150" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-explore" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;fontColor=#10213D;fontSize=13;" value="Explore" vertex="1">
+          <mxGeometry height="55" width="150" x="190" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-report" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;fontColor=#10213D;fontSize=13;" value="Report Lineage" vertex="1">
+          <mxGeometry height="55" width="170" x="360" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-table" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;fontColor=#10213D;fontSize=13;" value="Table Impact" vertex="1">
+          <mxGeometry height="55" width="150" x="550" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-measure" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;fontColor=#10213D;fontSize=13;" value="Measure Impact" vertex="1">
+          <mxGeometry height="55" width="160" x="720" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-nav-logout" parent="n-sidebar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEE2E2;strokeColor=#DC2626;fontColor=#7F1D1D;fontSize=12;" value="Logout&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;clear auth + app cache&lt;/font&gt;" vertex="1">
+          <mxGeometry height="55" width="165" x="900" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="n-home" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;spacing=10;" value="&lt;b&gt;HOME&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Do:&lt;/b&gt; search accessible reports; open a report; choose Explore or Report Lineage; refresh inventory; reopen recent reports.&lt;br&gt;&lt;br&gt;&lt;b&gt;Returns:&lt;/b&gt; workspace/report/semantic-model counts, report cards, selected report context." vertex="1">
+          <mxGeometry height="330" width="300" x="20" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="n-explore" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;spacing=10;" value="&lt;b&gt;EXPLORE — workspace/report guided path&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Select:&lt;/b&gt; one or more workspaces, then reports.&lt;br&gt;&lt;br&gt;&lt;b&gt;Workspaces Inventory:&lt;/b&gt; workspace name/ID + CSV.&lt;br&gt;&lt;b&gt;Workspace Artifacts:&lt;/b&gt; Reports, Dashboards, Workspace Access + CSV.&lt;br&gt;&lt;b&gt;Lineage Analysis:&lt;/b&gt; Source DB Lineage; Semantic Model Objects; Measure Source Lineage.&lt;br&gt;&lt;b&gt;Visual Details:&lt;/b&gt; Report Layout; Visual Source Lookup.&lt;br&gt;&lt;b&gt;Visual Item Lineage:&lt;/b&gt; appears after layout metadata is available." vertex="1">
+          <mxGeometry height="450" width="325" x="405" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="n-report" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;spacing=10;" value="&lt;b&gt;REPORT LINEAGE — best report-first path&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Navigate:&lt;/b&gt; search by report/workspace/dataset ID → Open selected report.&lt;br&gt;&lt;br&gt;&lt;b&gt;Lineage Analysis:&lt;/b&gt;&lt;br&gt;• Source DB Lineage — partitions, M/native SQL, physical sources&lt;br&gt;• Semantic Model Objects — tables, columns, measures, DAX&lt;br&gt;• Measure Source Lineage — DAX dependencies and mapped sources&lt;br&gt;• Download full report details — metadata ZIP&lt;br&gt;&lt;br&gt;&lt;b&gt;Visual Details:&lt;/b&gt; retrieve/authorize/upload report definition; pages, visuals, roles and fields.&lt;br&gt;&lt;b&gt;Visual Item Lineage:&lt;/b&gt; join visual → semantic object → source." vertex="1">
+          <mxGeometry height="450" width="395" x="780" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="n-table" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=12;spacing=10;" value="&lt;b&gt;TABLE IMPACT&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Select:&lt;/b&gt; workspace scope; searchable table suggestion or custom name; optional partial match; Fabric authorization for visual evidence.&lt;br&gt;&lt;br&gt;&lt;b&gt;Scans:&lt;/b&gt; primary/upstream models, source tables, semantic dependencies, connected reports, cached/retrieved visual layouts.&lt;br&gt;&lt;br&gt;&lt;b&gt;Returns tabs:&lt;/b&gt;&lt;br&gt;• Affected Reports&lt;br&gt;• Measure Dependencies&lt;br&gt;Metrics, visual confirmation status, related errors, CSV downloads." vertex="1">
+          <mxGeometry height="450" width="285" x="1215" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="n-measure" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=12;spacing=10;" value="&lt;b&gt;MEASURE IMPACT&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Select:&lt;/b&gt; workspace scope; searchable measure suggestion or custom name; optional partial match; Fabric authorization for visual evidence.&lt;br&gt;&lt;br&gt;&lt;b&gt;Scans:&lt;/b&gt; matching measures, reports, semantic dependencies, physical source mappings, primary/upstream models, visual layouts.&lt;br&gt;&lt;br&gt;&lt;b&gt;Returns tabs:&lt;/b&gt;&lt;br&gt;• Affected Reports&lt;br&gt;• Measure Lineage&lt;br&gt;Close-name suggestions, visual evidence, errors, CSV downloads." vertex="1">
+          <mxGeometry height="450" width="300" x="1550" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="n-powerai" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;strokeWidth=2;fontColor=#7C2D12;fontSize=13;spacing=10;" value="&lt;b&gt;PowerAI is available on every authenticated page&lt;/b&gt;&lt;br&gt;Click the lower-right floating button → ask within a large modal without leaving the current page. Set authorized workspace scope and Auto / Single / Multi-agent mode. Returns a grounded answer, tool trace, token usage, optional Snowflake lineage diagram, and answer-only Markdown download." vertex="1">
+          <mxGeometry height="115" width="1830" x="20" y="880" as="geometry" />
+        </mxCell>
+        <mxCell id="ne1" edge="1" parent="1" source="n-start" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="n-authq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne2" edge="1" parent="1" source="n-authq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="n-login" value="No">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne3" edge="1" parent="1" source="n-authq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="n-homeentry" value="Yes / restored">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne4" edge="1" parent="1" source="n-login" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="n-homeentry" value="tokens stored server-side">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne5" edge="1" parent="1" source="n-homeentry" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="n-sidebar">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne6" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;endArrow=block;endFill=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=2;" target="n-home">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="860" y="320" />
+              <mxPoint x="500" y="320" />
+              <mxPoint x="500" y="380" />
+              <mxPoint x="170" y="380" />
+            </Array>
+            <mxPoint x="860" y="216" as="sourcePoint" />
+            <mxPoint x="170" y="416" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ne7" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;endArrow=block;endFill=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=2;" target="n-explore">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1040" y="280" />
+              <mxPoint x="940" y="280" />
+              <mxPoint x="940" y="340" />
+              <mxPoint x="567.5" y="340" />
+            </Array>
+            <mxPoint x="1040" y="214.5" as="sourcePoint" />
+            <mxPoint x="568" y="417" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ne8" edge="1" parent="1" source="n-nav-report" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;endArrow=block;endFill=1;strokeWidth=2;" target="n-report">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne9" edge="1" parent="1" source="n-nav-table" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;endArrow=block;endFill=1;strokeWidth=2;" target="n-table">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ne10" edge="1" parent="1" source="n-nav-measure" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;endArrow=block;endFill=1;strokeWidth=2;" target="n-measure">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="lineage-processing" name="3 - Lineage Processing">
+    <mxGraphModel dx="2046" dy="1140" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1200" background="#F4F7FB" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="l-title" parent="1" style="text;html=1;align=left;fontSize=30;fontColor=#10213D;" value="&lt;b&gt;Lineage Engine and Multi-Semantic-Model Data Flow&lt;/b&gt;" vertex="1">
+          <mxGeometry height="45" width="1350" x="45" y="25" as="geometry" />
+        </mxCell>
+        <mxCell id="l-sub" parent="1" style="text;html=1;align=left;fontSize=14;fontColor=#5B6B85;" value="The report definition is always retrieved from the report workspace; semantic/XMLA metadata is always retrieved from the workspace that owns each semantic model." vertex="1">
+          <mxGeometry height="35" width="1800" x="45" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l-select" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=13;spacing=8;" value="&lt;b&gt;User selects report(s)&lt;/b&gt;&lt;br&gt;Home, Explore, or Report Lineage" vertex="1">
+          <mxGeometry height="85" width="230" x="45" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="l-context" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;spacing=8;" value="&lt;b&gt;Create explicit report context&lt;/b&gt;&lt;br&gt;Report ID • Report Workspace ID&lt;br&gt;Primary Dataset ID • Semantic Model Workspace ID&lt;br&gt;Report type/format • resolution provenance" vertex="1">
+          <mxGeometry height="105" width="310" x="330" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="l-scanq" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;strokeWidth=2;fontColor=#5D3A00;fontSize=12;" value="Admin Workspace Scanner authorized?" vertex="1">
+          <mxGeometry height="125" width="220" x="700" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="l-expand" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Expand composite model&lt;/b&gt;&lt;br&gt;Scanner report.datasetWorkspaceId&lt;br&gt;dataset.upstreamDatasets recursion&lt;br&gt;Primary / Upstream • depth • parent • owner workspace" vertex="1">
+          <mxGeometry height="135" width="300" x="980" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="l-fallback" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Safe owner fallback&lt;/b&gt;&lt;br&gt;Validate workspace dataset inventory&lt;br&gt;then Admin dataset lookup when allowed&lt;br&gt;Keep primary model only; do not claim upstream closure" vertex="1">
+          <mxGeometry height="120" width="300" x="980" y="255" as="geometry" />
+        </mxCell>
+        <mxCell id="l-contextset" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10213D;strokeColor=#10213D;fontColor=#FFFFFF;fontSize=13;spacing=9;" value="&lt;b&gt;Resolved model context set&lt;/b&gt;&lt;br&gt;One report can produce primary + upstream semantic-model contexts&lt;br&gt;Every row retains ownership and provenance" vertex="1">
+          <mxGeometry height="110" width="360" x="1360" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="l-restlane" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#EEF2FF;swimlaneFillColor=#FFFFFF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#312E81;fontSize=15;" value="&lt;b&gt;A. REST inventory / access path&lt;/b&gt;" vertex="1">
+          <mxGeometry height="285" width="410" x="45" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="l-rest" parent="l-restlane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4F46E5;fontColor=#312E81;fontSize=12;spacing=8;" value="Power BI REST APIs&lt;br&gt;groups • reports • dashboards • Apps • users • tiles • datasets" vertex="1">
+          <mxGeometry height="80" width="370" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="l-restout" parent="l-restlane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4F46E5;fontColor=#312E81;fontSize=12;spacing=8;" value="&lt;b&gt;Returns&lt;/b&gt;&lt;br&gt;Authorized inventory, report/dataset IDs, access tables, App metadata, dashboard tile dataset links" vertex="1">
+          <mxGeometry height="85" width="370" x="20" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="l-vislane" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#F3E8FF;swimlaneFillColor=#FFFFFF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#3B176B;fontSize=15;" value="&lt;b&gt;B. Report-definition / visual path — uses Report Workspace ID&lt;/b&gt;" vertex="1">
+          <mxGeometry height="430" width="610" x="485" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="l-fabricdef" parent="l-vislane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=12;spacing=8;" value="&lt;b&gt;Preferred&lt;/b&gt;&lt;br&gt;Separate Fabric token → POST getDefinition → poll operation/result" vertex="1">
+          <mxGeometry height="85" width="270" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="l-export" parent="l-vislane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Fallback&lt;/b&gt;&lt;br&gt;Power BI Export API → PBIX ZIP → Report/Layout" vertex="1">
+          <mxGeometry height="85" width="270" x="320" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="l-parser" parent="l-vislane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=12;spacing=8;" value="&lt;b&gt;PBIR / legacy parser&lt;/b&gt;&lt;br&gt;Pages • visual ID/name/title/type • position • field wells/roles • query refs • table/column/measure • aggregation" vertex="1">
+          <mxGeometry height="95" width="570" x="20" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="l-manual" parent="l-vislane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#64748B;dashed=1;fontColor=#334155;fontSize=11;spacing=8;" value="&lt;b&gt;If automatic retrieval is blocked&lt;/b&gt;&lt;br&gt;REST pages metadata only, or user uploads PBIX / PBIP ZIP / PBIR ZIP / Report Layout JSON. Manual upload gives visual metadata—not embedded model lineage." vertex="1">
+          <mxGeometry height="100" width="570" x="20" y="290" as="geometry" />
+        </mxCell>
+        <mxCell id="l-xmlalane" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#FFF1E8;swimlaneFillColor=#FFFFFF;strokeColor=#EA580C;strokeWidth=2;fontColor=#7C2D12;fontSize=15;" value="&lt;b&gt;C. Semantic/XMLA path — uses Semantic Model Workspace ID&lt;/b&gt;" vertex="1">
+          <mxGeometry height="430" width="730" x="1125" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="l-names" parent="l-xmlalane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontColor=#7C2D12;fontSize=12;spacing=8;" value="Resolve workspace + dataset names&lt;br&gt;Build powerbi://api.powerbi.com/v1.0/myorg/&amp;lt;workspace&amp;gt; XMLA URL" vertex="1">
+          <mxGeometry height="85" width="325" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="l-msolap" parent="l-xmlalane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="Windows ADO COM + MSOLAP connection&lt;br&gt;Power BI access token in connection properties" vertex="1">
+          <mxGeometry height="85" width="325" x="380" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="l-dmvs" parent="l-xmlalane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;XMLA DMV queries&lt;/b&gt;&lt;br&gt;TMSCHEMA tables, columns, measures, relationships, partitions, expressions&lt;br&gt;DISCOVER_CALC_DEPENDENCY and measure metadata" vertex="1">
+          <mxGeometry height="85" width="685" x="20" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="l-sourceparse" parent="l-xmlalane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EA580C;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Normalize and enrich&lt;/b&gt;&lt;br&gt;Flatten DAX dependency leaves • join LineageTag/SourceLineageTag • join partition ExpressionSourceID&lt;br&gt;parse Power Query M, Value.NativeQuery, AnalysisServices.Database, SQL sources and selected columns" vertex="1">
+          <mxGeometry height="105" width="685" x="20" y="285" as="geometry" />
+        </mxCell>
+        <mxCell id="l-join" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=12;spacing=9;" value="&lt;b&gt;Evidence join&lt;/b&gt;&lt;br&gt;Visual rows keep Primary Dataset ID&lt;br&gt;Match semantic table/object/type and query refs&lt;br&gt;Follow SourceLineageTag → upstream LineageTag only when supported&lt;br&gt;Enrich measure dependency with physical source" vertex="1">
+          <mxGeometry height="145" width="430" x="567" y="961" as="geometry" />
+        </mxCell>
+        <mxCell id="l-snow" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFFB;strokeColor=#0F766E;strokeWidth=2;fontColor=#134E4A;fontSize=12;spacing=9;" value="&lt;b&gt;Optional Snowflake handoff&lt;/b&gt;&lt;br&gt;Resolved fully qualified object / source column → configured object or column lineage procedure → recursive rows + graph" vertex="1">
+          <mxGeometry height="120" width="360" x="1050" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="l-outputs" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10213D;strokeColor=#10213D;strokeWidth=2;fontColor=#FFFFFF;fontSize=13;spacing=10;" value="&lt;b&gt;Lineage outputs&lt;/b&gt;&lt;br&gt;Source DB Lineage • Semantic Model Objects • Measure Source Lineage&lt;br&gt;Visual Details • Visual Item Lineage • Table/Measure Impact • Snowflake diagram&lt;br&gt;CSV tables + report metadata ZIP (including relationships when available)" vertex="1">
+          <mxGeometry height="145" width="395" x="1460" y="938" as="geometry" />
+        </mxCell>
+        <mxCell id="l-trust" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#F97316;fontColor=#7C2D12;fontSize=11;spacing=8;" value="&lt;b&gt;Evidence labels matter&lt;/b&gt;&lt;br&gt;Visual confirmation requires parsed definition evidence. Upstream closure requires scanner/tag provenance. Physical-source matches may be verified, inferred, ambiguous, unsupported, or permission-blocked." vertex="1">
+          <mxGeometry height="115" width="470" x="45" y="961" as="geometry" />
+        </mxCell>
+        <mxCell id="le1" edge="1" parent="1" source="l-select" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="l-context">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le2" edge="1" parent="1" source="l-context" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;" target="l-scanq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le3" edge="1" parent="1" source="l-scanq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="l-expand" value="Yes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le4" edge="1" parent="1" source="l-scanq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F97316;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="l-fallback" value="No / blocked">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="920" y="315" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le5" edge="1" parent="1" source="l-expand" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;strokeWidth=2;endArrow=block;endFill=1;" target="l-contextset">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le6" edge="1" parent="1" source="l-fallback" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F97316;strokeWidth=2;endArrow=block;endFill=1;" target="l-contextset">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le7" edge="1" parent="1" source="l-contextset" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=block;endFill=1;" target="l-restlane">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="400" />
+              <mxPoint x="250" y="400" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le8" edge="1" parent="1" source="l-contextset" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="l-vislane" value="report workspace">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1470" y="420" />
+              <mxPoint x="790" y="420" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le9" edge="1" parent="1" style="html=1;strokeColor=#EA580C;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;entryX=0.568;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" value="model workspace(s)">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1558.64" y="380" />
+            </Array>
+            <mxPoint x="1558.8416000000002" y="310" as="sourcePoint" />
+            <mxPoint x="1558.6399999999999" y="450" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le10" edge="1" parent="1" style="html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="770" y="880" as="sourcePoint" />
+            <mxPoint x="771" y="961" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le11" edge="1" parent="1" source="l-xmlalane" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#EA580C;strokeWidth=2;endArrow=block;endFill=1;" target="l-join">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1490" y="920" />
+              <mxPoint x="782" y="920" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le12" edge="1" parent="1" source="l-join" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0F766E;strokeWidth=2;dashed=1;endArrow=block;endFill=1;" target="l-snow">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="le13" edge="1" parent="1" source="l-join" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#10213D;strokeWidth=3;endArrow=block;endFill=1;" target="l-outputs">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1015" y="1033.5" />
+              <mxPoint x="1015" y="1130" />
+              <mxPoint x="1657.5" y="1130" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="le14" edge="1" parent="1" source="l-snow" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0F766E;strokeWidth=2;endArrow=block;endFill=1;" target="l-outputs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="powerai-flow" name="4 - PowerAI Flow">
+    <mxGraphModel dx="2046" dy="1140" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1200" background="#F4F7FB" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p-title" parent="1" style="text;html=1;align=left;fontSize=30;fontColor=#10213D;" value="&lt;b&gt;PowerAI — Read-Only Agent and Evidence Flow&lt;/b&gt;" vertex="1">
+          <mxGeometry height="45" width="1300" x="45" y="25" as="geometry" />
+        </mxCell>
+        <mxCell id="p-sub" parent="1" style="text;html=1;align=left;fontSize=14;fontColor=#5B6B85;" value="PowerAI explains app-collected lineage. It does not query credentials, run arbitrary SQL, change Power BI/Snowflake, or invent visual/source evidence." vertex="1">
+          <mxGeometry height="35" width="1800" x="45" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p-open" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;strokeWidth=2;fontColor=#7C2D12;fontSize=13;spacing=8;" value="&lt;b&gt;Open PowerAI&lt;/b&gt;&lt;br&gt;Floating button on any authenticated route" vertex="1">
+          <mxGeometry height="85" width="230" x="45" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p-settings" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EA580C;strokeWidth=2;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Modal settings&lt;/b&gt;&lt;br&gt;Authorized workspace scope&lt;br&gt;Reasoning: Auto / Single / Multi&lt;br&gt;Suggested question or typed prompt&lt;br&gt;Refresh inventory / Clear chat" vertex="1">
+          <mxGeometry height="115" width="285" x="325" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p-gates" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;strokeWidth=2;fontColor=#5D3A00;fontSize=12;spacing=8;" value="&lt;b&gt;Request gates&lt;/b&gt;&lt;br&gt;Visual evidence enabled only when question explicitly asks for visuals/pages/charts/cards/slicers&lt;br&gt;Diagram enabled only when question asks for a lineage diagram" vertex="1">
+          <mxGeometry height="125" width="330" x="660" y="115" as="geometry" />
+        </mxCell>
+        <mxCell id="p-router" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;" value="&lt;b&gt;Deterministic router&lt;/b&gt;&lt;br&gt;No model call / no token cost&lt;br&gt;Uses question terms + configured mode&lt;br&gt;Chooses lowest-cost safe route" vertex="1">
+          <mxGeometry height="145" width="250" x="1050" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="p-single" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F0FE;strokeColor=#2563EB;strokeWidth=2;fontColor=#10213D;fontSize=12;spacing=8;" value="&lt;b&gt;Single route&lt;/b&gt;&lt;br&gt;General lineage agent&lt;br&gt;First model turn must call a read-only lineage tool" vertex="1">
+          <mxGeometry height="105" width="250" x="1050" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p-index" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Multi route: build/reuse shared estate index once&lt;/b&gt;&lt;br&gt;Authorized reports + semantic objects + sources + dependencies&lt;br&gt;Visual metadata only when the visual gate is open" vertex="1">
+          <mxGeometry height="110" width="310" x="1450" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p-specialists" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#E8F7EF;swimlaneFillColor=#FFFFFF;strokeColor=#059669;strokeWidth=2;fontColor=#064E3B;fontSize=15;" value="&lt;b&gt;Selected specialists only&lt;/b&gt;" vertex="1">
+          <mxGeometry height="205" width="745" x="1110" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="p-semantic" parent="p-specialists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=11;" value="Power BI semantic&lt;br&gt;reports • models • DAX" vertex="1">
+          <mxGeometry height="75" width="160" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-visual" parent="p-specialists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=11;" value="Visual evidence&lt;br&gt;only when requested" vertex="1">
+          <mxGeometry height="75" width="160" x="195" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-snowsp" parent="p-specialists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFFB;strokeColor=#0F766E;fontColor=#134E4A;fontSize=11;" value="Snowflake lineage&lt;br&gt;objects • columns • graph" vertex="1">
+          <mxGeometry height="75" width="160" x="370" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-impactsp" parent="p-specialists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;fontColor=#5D3A00;fontSize=11;" value="Impact analysis&lt;br&gt;table / measure blast radius" vertex="1">
+          <mxGeometry height="75" width="175" x="545" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-review" parent="p-specialists" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=7;" value="If 2+ specialists and budget permits: Evidence Reviewer → Coordinator → one grounded answer" vertex="1">
+          <mxGeometry height="45" width="545" x="100" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p-runtimeq" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#3B176B;fontSize=12;" value="Configured runtime?" vertex="1">
+          <mxGeometry height="120" width="220" x="760" y="462.5" as="geometry" />
+        </mxCell>
+        <mxCell id="p-direct" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=12;spacing=8;" value="&lt;b&gt;Direct&lt;/b&gt;&lt;br&gt;Application prompts + tool loop&lt;br&gt;Anthropic Messages API" vertex="1">
+          <mxGeometry height="90" width="245" x="440" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="p-managed" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#7C3AED;fontColor=#3B176B;fontSize=12;spacing=8;" value="&lt;b&gt;Managed&lt;/b&gt;&lt;br&gt;Configured env_... + agent_...&lt;br&gt;Custom tool events return to the same session" vertex="1">
+          <mxGeometry height="95" width="245" x="440" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="p-executor" parent="1" style="swimlane;html=1;rounded=1;startSize=34;fillColor=#EEF2FF;swimlaneFillColor=#FFFFFF;strokeColor=#4F46E5;strokeWidth=2;fontColor=#312E81;fontSize=15;" value="&lt;b&gt;Local bounded read-only tool executor&lt;/b&gt;" vertex="1">
+          <mxGeometry height="440" width="1130" x="45" y="700" as="geometry" />
+        </mxCell>
+        <mxCell id="p-scope" parent="p-executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#F59E0B;fontColor=#5D3A00;fontSize=12;spacing=8;" value="&lt;b&gt;Before every call&lt;/b&gt;&lt;br&gt;Validate tool name + JSON args&lt;br&gt;Reject report/workspace outside signed-in inventory and selected workspace scope&lt;br&gt;Bound depth, rows, characters, rounds, token/cost budget" vertex="1">
+          <mxGeometry height="120" width="330" x="20" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-tools1" parent="p-executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4F46E5;fontColor=#312E81;fontSize=12;spacing=8;" value="&lt;b&gt;Estate tools&lt;/b&gt;&lt;br&gt;get_lineage_estate_overview&lt;br&gt;search_entire_lineage&lt;br&gt;search_reports&lt;br&gt;inspect_report_lineage" vertex="1">
+          <mxGeometry height="120" width="320" x="380" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-tools2" parent="p-executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4F46E5;fontColor=#312E81;fontSize=12;spacing=8;" value="&lt;b&gt;Analysis tools&lt;/b&gt;&lt;br&gt;analyze_measure_impact&lt;br&gt;analyze_table_impact&lt;br&gt;trace_snowflake_lineage" vertex="1">
+          <mxGeometry height="120" width="375" x="730" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="p-existing" parent="p-executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F7EF;strokeColor=#059669;fontColor=#064E3B;fontSize=12;spacing=8;" value="&lt;b&gt;Calls existing deterministic application functions&lt;/b&gt;&lt;br&gt;Power BI REST / Admin Scanner • Fabric report definition • XMLA semantic lineage • table/measure impact • Snowflake object/column trace" vertex="1">
+          <mxGeometry height="75" width="1085" x="20" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="p-bound" parent="p-executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#64748B;dashed=1;fontColor=#334155;fontSize=11;spacing=7;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;Trim to bounded evidence packets; metadata and DAX/SQL are treated as untrusted data. Credentials, tokens, raw business rows, arbitrary SQL, file writes, refresh, delete, and admin actions are not exposed. Snowflake access is additionally limited by its configured role/procedure privileges.&lt;/font&gt;" vertex="1">
+          <mxGeometry height="115" width="1085" x="20" y="295" as="geometry" />
+        </mxCell>
+        <mxCell id="p-anthropic" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1E8;strokeColor=#EA580C;strokeWidth=2;fontColor=#7C2D12;fontSize=12;spacing=8;" value="&lt;b&gt;Anthropic&lt;/b&gt;&lt;br&gt;Receives question, authorized context, tool schemas, and bounded tool results only" vertex="1">
+          <mxGeometry height="105" width="300" x="1224" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="p-answer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#10213D;strokeColor=#10213D;strokeWidth=2;fontColor=#FFFFFF;fontSize=13;spacing=9;" value="&lt;b&gt;PowerAI response in modal&lt;/b&gt;&lt;br&gt;Answer • Evidence • Impact&lt;br&gt;Model impact vs confirmed visual use clearly separated&lt;br&gt;Plain-English measure definition when applicable&lt;br&gt;Missing/blocked evidence stated explicitly" vertex="1">
+          <mxGeometry height="150" width="275" x="1600" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="p-diagram" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFFB;strokeColor=#0F766E;strokeWidth=2;fontColor=#134E4A;fontSize=12;spacing=8;" value="&lt;b&gt;Optional returned artifacts&lt;/b&gt;&lt;br&gt;Interactive Snowflake lineage diagram only from trace rows&lt;br&gt;Tool trace + selected agents + duration + token usage&lt;br&gt;Answer-only Markdown download (no extra model call)" vertex="1">
+          <mxGeometry height="125" width="365" x="1510" y="900" as="geometry" />
+        </mxCell>
+        <mxCell id="p-error" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEE2E2;strokeColor=#DC2626;fontColor=#7F1D1D;fontSize=11;spacing=8;" value="&lt;b&gt;Controlled stop conditions&lt;/b&gt;&lt;br&gt;Claude not configured • Managed Agent IDs incomplete • unauthorized scope • tool failure • visual/Snowflake evidence unavailable • budget reached. The UI reports the limitation instead of guessing." vertex="1">
+          <mxGeometry height="80" width="655" x="1220" y="1060" as="geometry" />
+        </mxCell>
+        <mxCell id="pe1" edge="1" parent="1" source="p-open" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#EA580C;strokeWidth=2;endArrow=block;endFill=1;" target="p-settings">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe2" edge="1" parent="1" source="p-settings" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F59E0B;strokeWidth=2;endArrow=block;endFill=1;" target="p-gates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe3" edge="1" parent="1" source="p-gates" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;" target="p-router">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe4" edge="1" parent="1" source="p-router" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#2563EB;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="p-single" value="simple / single domain">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe5" edge="1" parent="1" source="p-router" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="p-index" value="cross-system / multi">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1440" y="175" />
+              <mxPoint x="1440" y="175" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe6" edge="1" parent="1" source="p-index" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#059669;strokeWidth=2;endArrow=block;endFill=1;" target="p-specialists">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1605" y="370" />
+              <mxPoint x="1605" y="370" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe7" edge="1" parent="1" source="p-single" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;" target="p-runtimeq">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="870" y="352.5" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe8" edge="1" parent="1" source="p-specialists" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;" target="p-runtimeq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe9" edge="1" parent="1" source="p-runtimeq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="p-direct" value="direct">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe10" edge="1" parent="1" source="p-runtimeq" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#7C3AED;strokeWidth=2;endArrow=block;endFill=1;fontSize=11;" target="p-managed" value="managed">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pe11" edge="1" parent="1" source="p-direct" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=block;endFill=1;" target="p-executor">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="380" y="465" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe12" edge="1" parent="1" source="p-managed" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#4F46E5;strokeWidth=2;endArrow=block;endFill=1;" target="p-executor">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="562.5" y="680" />
+              <mxPoint x="562.5" y="680" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe13" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#EA580C;strokeWidth=2;startArrow=block;startFill=1;endArrow=block;endFill=1;fontSize=11;" value="tool request / result loop">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1300" y="910" />
+              <mxPoint x="1375" y="910" />
+            </Array>
+            <mxPoint x="1180" y="910" as="sourcePoint" />
+            <mxPoint x="1375" y="815" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe14" edge="1" parent="1" source="p-anthropic" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#10213D;strokeWidth=3;endArrow=block;endFill=1;fontSize=11;" target="p-answer" value="F&lt;span style=&quot;background-color: light-dark(#ffffff, var(--ge-dark-color, #121212)); color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;actual answer&lt;/span&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1562" y="740" />
+              <mxPoint x="1562" y="800" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pe15" edge="1" parent="1" source="p-answer" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#0F766E;strokeWidth=2;endArrow=block;endFill=1;" target="p-diagram">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
