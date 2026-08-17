@@ -2,13 +2,11 @@
 
 ## Purpose
 
-This reference explains every key in the `claude` configuration. It records
-which runtime uses the key, what changing it does, and a practical setting for
-efficient Power BI and Snowflake lineage work.
-
-Keep populated settings only in ignored `config/app_settings.json`, ignored
-`.streamlit/secrets.toml`, or the deployment secret store. Never commit API
-keys, `env_...` identifiers, or `agent_...` identifiers.
+This reference explains the built-in Claude runtime settings and their effect
+on Power BI and Snowflake lineage work. Runtime connection values are entered
+only in the connection sidebar. The API key remains in session memory; managed-agent
+environment and agent IDs are validated as setup parameters. Local credential
+or configuration files are not supported.
 
 The application resolves and bounds settings in
 [pbi_modules/claude_agent.py:179](../pbi_modules/claude_agent.py:179). Defaults
@@ -19,7 +17,7 @@ are in [utils.py:34](../utils.py:34).
 | Key | Runtime | Meaning | Efficient recommendation |
 |---|---|---|---|
 | `enabled` | Direct and Managed | Enables Claude features. | Keep `false` outside approved deployments; set `true` only where a valid key exists. |
-| `api_key` | Direct and Managed | Anthropic API credential. | Put it only in a secret store. Never include it in Git or Claude Console instructions. |
+| `api_key` | Direct and Managed | Anthropic API credential. | Enter it in the masked runtime setup control. Never include it in Git or Claude Console instructions. |
 | `base_url` | Direct and Managed | Anthropic API endpoint. | Keep `https://api.anthropic.com`; change only for an approved HTTPS proxy. |
 | `model` | Direct; cost planning for Managed | Direct response model. In Managed mode, the Console agent chooses the real model. | Use an available Haiku model for routine analysis. Use Sonnet for high-quality final synthesis or deep report analysis. Mirror the Console model family for meaningful cost planning. |
 | `timeout_seconds` | Direct and Managed | Maximum wait for an API/session call. Valid range: `10-300`. | `90` normally; `120-180` for slow networks or deep analysis. It improves patience, not answer quality. |

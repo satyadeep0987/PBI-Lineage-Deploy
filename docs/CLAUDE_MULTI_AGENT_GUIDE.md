@@ -60,33 +60,10 @@ Use this section after creating the agents in Anthropic Console.
 | Evidence reviewer | `evidence_reviewer_agent_id` | Conflicts and evidence quality across specialist findings |
 | Coordinator | `coordinator_agent_id` | One final grounded answer from the selected findings |
 
-3. Paste the values in the deployment secret store, never into a tracked file.
-   For Streamlit Community Cloud, use **App settings > Secrets**. For local
-   development, use the ignored `.streamlit/secrets.toml` or ignored
-   `config/app_settings.json`.
-
-```toml
-[claude]
-enabled = true
-api_key = "<anthropic-api-key>"
-base_url = "https://api.anthropic.com"
-model = "claude-haiku-4-5"
-agent_runtime = "managed"
-
-[claude.managed_agents]
-enabled = true
-environment_id = "env_<your-managed-environment-id>"
-general_lineage_agent_id = "agent_<general-lineage-agent-id>"
-powerbi_semantic_agent_id = "agent_<powerbi-semantic-agent-id>"
-visual_evidence_agent_id = "agent_<visual-evidence-agent-id>"
-snowflake_lineage_agent_id = "agent_<snowflake-lineage-agent-id>"
-impact_analysis_agent_id = "agent_<impact-analysis-agent-id>"
-evidence_reviewer_agent_id = "agent_<evidence-reviewer-agent-id>"
-coordinator_agent_id = "agent_<coordinator-agent-id>"
-session_title_prefix = "PBI Lineage Explorer"
-session_timeout_seconds = 180
-max_custom_tool_events = 20
-```
+3. Select **Managed multi-agent** in the PowerAI sidebar panel. Enter the shared
+   environment ID and all seven role-specific agent IDs. After Microsoft browser
+   authorization returns, enter the one Anthropic API key in the masked session
+   control. These values are never loaded from a local configuration file.
 
 4. In each tool-using Claude Console agent, add custom tools with these exact
    names and matching JSON schemas from the application's tool contract:
@@ -96,8 +73,8 @@ max_custom_tool_events = 20
    receives those calls, enforces signed-in workspace scope, runs its existing
    read-only functions, and returns the result with `user.custom_tool_result`.
    The reviewer and coordinator can be text-only agents.
-5. Restart or rerun the app after saving Secrets. The Claude page validates the
-   required `env_...` and `agent_...` values before it starts a managed request.
+5. Continue only after the sidebar validates the required `env_...` and
+   `agent_...` values and accepts the session-only API key.
 
 Anthropic documents that a Managed Agent session needs both an agent ID and an
 environment ID, and that custom tools require the application to return the
@@ -138,15 +115,10 @@ the Power BI estate index independently.
 1. Create or fund an Anthropic API account and generate an API key. A Claude
    web subscription is separate from API billing. The configured account must
    have available API credits.
-2. Choose `agent_runtime = "direct"` to use application-defined agents, or
-   follow **Configure Your Existing Claude Managed Agents** and set
-   `agent_runtime = "managed"` to use your Console-created agents.
-3. Store the key outside Git. For local deployment use ignored
-   `config/app_settings.json`; for Streamlit deployment use the `[claude]`
-   section in Streamlit Secrets. Use
-   [.streamlit/secrets.toml.example](../.streamlit/secrets.toml.example) as the
-   safe template.
-3. Keep `orchestration_mode = "auto"` as the normal setting. It routes simple
+2. Select **Single agent** for the direct application-defined agent or
+   **Managed multi-agent** for Console-created agents in the PowerAI sidebar panel.
+3. Enter the key only in the masked session control after browser authorization.
+4. Keep the default routing strategy. It routes simple
    questions to the general agent and expands only complex cross-system
    questions.
 4. Start the app, sign in to Power BI, open **Claude Agent**, select the
@@ -162,11 +134,10 @@ the Power BI estate index independently.
    activity, and any skipped work. A skipped specialist means a budget or
    availability guard acted; it is not silently ignored.
 
-## Recommended Configuration
+## Recommended Runtime Profile
 
-Add these values under `[claude]` in Streamlit Secrets, or as members of the
-`claude` object in `config/app_settings.json`. Do not paste a real API key into
-source-controlled files.
+The PowerAI sidebar panel selects the direct or managed contract. The following values are
+built-in non-secret tuning defaults; they are not a local deployment file.
 
 For a field-by-field explanation, runtime applicability, validated ranges, and
 cost/quality profiles, see [Claude Configuration Reference](CLAUDE_CONFIGURATION_REFERENCE.md).
@@ -240,9 +211,8 @@ separate from the Claude estimate.
 | [streamlit_app.py:10215](../streamlit_app.py:10215) | `_render_claude_agent_trace` | Makes agent activity and budget visible to a user/auditor | Claude Agent page | Strategy/cost caption and evidence activity table |
 | [streamlit_app.py:10254](../streamlit_app.py:10254) | `render_claude_lineage_agent_page` | Provides workspace scope, managed-ID validation, strategy, index refresh, chat, and output rendering | Main Streamlit workflow router | Claude user interface and persisted chat state |
 | [pbi_modules/app_shell.py:119](../pbi_modules/app_shell.py:119) | Claude sidebar button | Makes Claude the first app navigation destination | Authenticated sidebar renderer | Switches workflow to `claude_agent` |
-| [utils.py:34](../utils.py:34) | `DEFAULT_APP_SETTINGS["claude"]` | Supplies safe local defaults, including Auto mode and the $0.08 planning guard | `Utils.load_app_settings` | Merged configuration when values are absent from secrets/local settings |
-| [config/app_settings.template.json:9](../config/app_settings.template.json:9) | Claude template | Gives a safe JSON deployment example without a key | Local configuration setup | Copyable settings structure |
-| [.streamlit/secrets.toml.example:25](../.streamlit/secrets.toml.example:25) | Claude Secrets template | Gives a Streamlit Cloud TOML deployment example without a key | Streamlit Secrets setup | Copyable secrets structure |
+| [utils.py:34](../utils.py:34) | `DEFAULT_APP_SETTINGS["claude"]` | Supplies built-in non-secret limits and model defaults | Session runtime | Bounded behavior when setup does not expose a tuning control |
+| [pbi_modules/setup_controller.py](../pbi_modules/setup_controller.py) | Session setup controller | Validates mode, environment, agent IDs, and the post-redirect API key | Runtime setup | Session-only Claude contract |
 | [tls_trust.py:16](../tls_trust.py:16) | `configure_tls_trust` | Lets the Anthropic HTTP client trust approved corporate CA roots | Imported at Streamlit startup | HTTPS trust configuration; SSL verification remains enabled |
 | [requirements.txt:4](../requirements.txt:4) | `anthropic` dependency | Provides the official direct Anthropic SDK | Python environment | Claude Messages API client |
 | [Test/test_claude_agent.py:1](../Test/test_claude_agent.py:1) | Single-agent tests | Protects settings, grounding, tool and error behavior | Test runner | Pass/fail regression coverage |

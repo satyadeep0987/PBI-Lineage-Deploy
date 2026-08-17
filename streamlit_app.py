@@ -1,6 +1,5 @@
 import streamlit as st
 import time
-import os
 
 from tls_trust import configure_tls_trust, format_request_exception
 
@@ -21,20 +20,18 @@ import json
 import html
 import hashlib
 import secrets
-import threading
+import copy
 import streamlit.components.v1 as components
 from xmla_ado_com import connect_xmla
 from pathlib import PurePosixPath
 from urllib.parse import quote
 from pbi_modules.app_shell import (
     apply_workflow_query_params,
-    check_authenticated_session,
     direct_report_context,
     filter_excluded_workspaces,
     get_accessible_inventory,
     render_app_top_bar,
     render_direct_measure_lookup_page,
-    render_login_page,
     render_measure_impact_page,
     render_table_impact_page,
     render_workflow_choice_page,
@@ -43,6 +40,21 @@ from pbi_modules.analysis_document import (
     build_claude_analysis_markdown,
     claude_analysis_markdown_filename,
 )
+from pbi_modules.setup_controller import (
+    SETUP_STATE_KEY,
+    claude_is_ready,
+    claude_runtime_settings,
+    close_setup_resources,
+    disconnect_powerbi,
+    ensure_setup_state,
+    legacy_auth_bundle,
+    powerbi_is_ready,
+    powerbi_runtime_config,
+    reconcile_setup_state,
+    snowflake_is_ready,
+    snowflake_connection_settings,
+)
+from pbi_modules.connection_sidebar import purge_connection_derived_state
 from pbi_modules.claude_agent import (
     ClaudeAgentError,
     ClaudeConfigurationError,
@@ -118,334 +130,43 @@ st.dataframe = _dataframe_without_space_columns
 clientapp_mu = None
 clientapp_sp = None
 clientapp_spa = None
-_DEVICE_FLOW_STATE_KEY = "msal_device_flow"
-_FABRIC_DEVICE_FLOW_STATE_KEY = "msal_fabric_device_flow"
-_GENERIC_AAD_AUTHORITY_TENANTS = {"common", "organizations", "consumers"}
 _FABRIC_API_BASE_URL = "https://api.fabric.microsoft.com/v1"
 _DEFAULT_FABRIC_REPORT_SCOPES = ["https://api.fabric.microsoft.com/Report.ReadWrite.All"]
-_BROWSER_AUTH_COOKIE_NAME = "pbi_lineage_browser"
-_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
-_BROWSER_AUTH_COOKIE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
-_PENDING_BROWSER_AUTH_COOKIE_KEY = "pending_browser_auth_cookie"
 
 
-@st.cache_resource(show_spinner=False)
-def _browser_auth_registry():
-    """Keep authenticated bundles across WebSocket reconnects in this app process."""
-    return {"lock": threading.RLock(), "sessions": {}}
+def _runtime_setup_state():
+    state = st.session_state.get(SETUP_STATE_KEY)
+    return state if isinstance(state, dict) else None
 
 
-def _browser_auth_cookie_value():
-    """Return the app-owned opaque browser identifier when it is valid."""
-    try:
-        cookie_value = str(st.context.cookies.get(_BROWSER_AUTH_COOKIE_NAME) or "").strip()
-    except Exception:
-        cookie_value = ""
-
-    if not _BROWSER_AUTH_COOKIE_PATTERN.fullmatch(cookie_value):
-        return None
-    return cookie_value
+def _runtime_powerbi_config():
+    state = _runtime_setup_state()
+    if not state:
+        raise RuntimeError("Complete the session setup before using Power BI.")
+    return powerbi_runtime_config(state)
 
 
-def _browser_auth_key_from_cookie(cookie_value):
-    if not cookie_value:
-        return None
-    return hashlib.sha256(f"pbi-lineage-v2:{cookie_value}".encode("utf-8")).hexdigest()
-
-
-def _browser_auth_key():
-    """Return the server-side registry key for this browser."""
-    return _browser_auth_key_from_cookie(_browser_auth_cookie_value())
-
-
-_SHARED_APP_STATE_TTL_SECONDS = 6 * 60 * 60
-_SHARED_APP_CACHE_CLEAR_REQUEST_KEY = "_clear_shared_lineage_cache_v1"
-_SHARED_APP_STATE_EXACT_KEYS = {
-    "workflow_mode",
-    "direct_measure_active_context",
-    "recent_lineage_reports",
-    "accessible_lineage_inventory_v4",
-    "direct_lookup_report_records_v3",
-    "workspaces_list_v2",
-    "apps_list",
-    "table_impact_query",
-    "measure_impact_query",
-    "table_impact_analysis_result",
-    "measure_impact_analysis_result",
-    "claude_home_featured_reports_v1",
-}
-_SHARED_APP_STATE_PREFIXES = (
-    "reports_",
-    "dashboards_",
-    "ws_users_",
-    "app_reports_",
-    "app_dashboards_",
-    "app_users_",
-    "app_tiles_",
-    "tiles_",
-    "dataset_workspace_",
-    "workspace_report_resolved_ids_v17_",
-    "app_report_resolved_ids_v17_",
-    "workspace_dataset_ids_v1_",
-    "semantic_model_owner_workspace_v1_",
-    "workspace_lineage_scan_v1_",
-    "source_db_lineage_v18_",
-    "js_embed_url_",
-    "impact_suggestion_names_v1_",
-)
-_SHARED_APP_STATE_CONTAINS = (
-    "_semantic_objects_v24_",
-    "_source_lineage_v24_",
-    "_measure_lineage_v24_",
-    "_semantic_relationships_v1_",
-    "_uploaded_layout_records_",
-    "_automatic_layout_v3_",
-    "_details_export_bytes",
-    "_recursive_snowflake_lineage_result",
-    "_snowflake_lineage_payload",
-    "_measure_detail_definition_selection",
-)
-
-
-@st.cache_resource(show_spinner=False)
-def _browser_app_state_registry():
-    """Share non-auth app cache across tabs for the same browser cookie."""
-    return {"lock": threading.RLock(), "states": {}}
-
-
-def _purge_expired_shared_app_state(states, now=None):
-    now = time.time() if now is None else now
-    expired_keys = [
-        key
-        for key, payload in states.items()
-        if now - float((payload or {}).get("updated_at") or 0) > _SHARED_APP_STATE_TTL_SECONDS
-    ]
-    for key in expired_keys:
-        states.pop(key, None)
-
-
-def _is_shared_app_state_key(key):
-    key = str(key or "")
-    if key in _SHARED_APP_STATE_EXACT_KEYS:
-        return True
-    if any(key.startswith(prefix) for prefix in _SHARED_APP_STATE_PREFIXES):
-        return True
-    return any(marker in key for marker in _SHARED_APP_STATE_CONTAINS)
+def _persist_browser_auth(_bundle):
+    """Compatibility no-op: bearer tokens never leave session state."""
+    return
 
 
 def _hydrate_shared_app_state():
-    """Populate a fresh browser tab from previously loaded app cache."""
-    if bool(st.session_state.pop(_SHARED_APP_CACHE_CLEAR_REQUEST_KEY, False)):
-        _forget_shared_app_state()
-        return
-
-    browser_key = _browser_auth_key()
-    if not browser_key:
-        return
-
-    registry = _browser_app_state_registry()
-    now = time.time()
-    with registry["lock"]:
-        _purge_expired_shared_app_state(registry["states"], now)
-        payload = registry["states"].get(browser_key) or {}
-        values = dict(payload.get("values") or {})
-
-    for key, value in values.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    """Compatibility no-op: cross-WebSocket state sharing is disabled."""
+    return
 
 
 def _persist_shared_app_state():
-    """Persist non-auth app cache so another tab can reuse it."""
-    browser_key = _browser_auth_key()
-    if not browser_key or not st.session_state.get("auth_bundle"):
-        return
-
-    values = {
-        str(key): value
-        for key, value in list(st.session_state.items())
-        if _is_shared_app_state_key(key)
-    }
-    registry = _browser_app_state_registry()
-    now = time.time()
-    with registry["lock"]:
-        _purge_expired_shared_app_state(registry["states"], now)
-        registry["states"][browser_key] = {
-            "updated_at": now,
-            "values": values,
-        }
+    """Compatibility no-op: cross-WebSocket state sharing is disabled."""
+    return
 
 
 def _forget_shared_app_state():
-    """Remove this browser's shared non-auth app cache."""
-    browser_key = _browser_auth_key()
-    if not browser_key:
-        return
-
-    registry = _browser_app_state_registry()
-    with registry["lock"]:
-        registry["states"].pop(browser_key, None)
-
-
-def _purge_expired_browser_auth(sessions, now=None):
-    now = time.time() if now is None else now
-    expired_keys = [
-        key
-        for key, bundle in sessions.items()
-        if float((bundle or {}).get("expires_at") or 0) <= now
-    ]
-    for key in expired_keys:
-        sessions.pop(key, None)
-
-
-def _persist_browser_auth_for_key(browser_key, bundle):
-    if not browser_key or not isinstance(bundle, dict):
-        return
-
-    now = time.time()
-    if float(bundle.get("expires_at") or 0) <= now:
-        return
-
-    registry = _browser_auth_registry()
-    with registry["lock"]:
-        _purge_expired_browser_auth(registry["sessions"], now)
-        registry["sessions"][browser_key] = dict(bundle)
-
-
-def _persist_browser_auth(bundle):
-    """Store tokens server-side so browser refresh/back-forward can reconnect."""
-    _persist_browser_auth_for_key(_browser_auth_key(), bundle)
-
-
-def _ensure_browser_auth_cookie():
-    """Create a stable opaque browser ID before rendering login or app pages."""
-    browser_cookie = _browser_auth_cookie_value()
-    if browser_cookie:
-        existing_bundle = st.session_state.get("auth_bundle")
-        if existing_bundle:
-            _persist_browser_auth_for_key(
-                _browser_auth_key_from_cookie(browser_cookie),
-                existing_bundle,
-            )
-        return
-
-    pending_cookie = str(
-        st.session_state.get(_PENDING_BROWSER_AUTH_COOKIE_KEY) or ""
-    ).strip()
-    if not _BROWSER_AUTH_COOKIE_PATTERN.fullmatch(pending_cookie):
-        pending_cookie = secrets.token_urlsafe(32)
-        st.session_state[_PENDING_BROWSER_AUTH_COOKIE_KEY] = pending_cookie
-
-    # Preserve an already authenticated tab while moving it from the rotating
-    # Streamlit XSRF cookie to the app-owned stable browser identifier.
-    existing_bundle = st.session_state.get("auth_bundle")
-    if existing_bundle:
-        _persist_browser_auth_for_key(
-            _browser_auth_key_from_cookie(pending_cookie),
-            existing_bundle,
-        )
-
-    cookie_name_json = json.dumps(_BROWSER_AUTH_COOKIE_NAME)
-    cookie_value_json = json.dumps(pending_cookie)
-    components.html(
-        f"""
-        <div id="pbi-cookie-status" role="status"></div>
-        <script>
-          const cookieName = {cookie_name_json};
-          const cookieValue = {cookie_value_json};
-          const secure = window.parent.location.protocol === "https:" ? "; Secure" : "";
-          document.cookie = `${{cookieName}}=${{encodeURIComponent(cookieValue)}}; Path=/; SameSite=Lax; Max-Age={_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS}${{secure}}`;
-          const cookieWasSet = document.cookie
-            .split(";")
-            .some(part => part.trim().startsWith(`${{cookieName}}=`));
-          if (cookieWasSet) {{
-            window.setTimeout(() => window.parent.location.reload(), 100);
-          }} else {{
-            document.getElementById("pbi-cookie-status").textContent =
-              "Browser cookies are required to keep your Power BI session active.";
-          }}
-        </script>
-        <style>
-          #pbi-cookie-status {{
-            color: #991b1b;
-            font: 600 13px/1.4 sans-serif;
-            padding: 6px 8px;
-          }}
-        </style>
-        """,
-        height=36,
-    )
-    st.stop()
-
-
-def _restore_browser_auth():
-    """Restore a valid server-side bundle for the current browser connection."""
-    browser_key = _browser_auth_key()
-    if not browser_key:
-        return None
-
-    registry = _browser_auth_registry()
-    now = time.time()
-    with registry["lock"]:
-        _purge_expired_browser_auth(registry["sessions"], now)
-        bundle = registry["sessions"].get(browser_key)
-        return dict(bundle) if bundle else None
+    return
 
 
 def _forget_browser_auth():
-    """Delete the current browser's server-side bundle on logout or reset."""
-    browser_key = _browser_auth_key()
-    if not browser_key:
-        return
-
-    registry = _browser_auth_registry()
-    with registry["lock"]:
-        registry["sessions"].pop(browser_key, None)
-
-
-def _streamlit_secret_value(*keys):
-    try:
-        value = st.secrets
-        for key in keys:
-            if not hasattr(value, "get") or key not in value:
-                return None
-            value = value.get(key)
-        return value
-    except Exception:
-        return None
-
-
-def _use_device_code_auth():
-    """Use device-code auth by default in the deploy package."""
-    secret_auth_flow = (
-        _streamlit_secret_value("PBI_AUTH_FLOW")
-        or _streamlit_secret_value("powerbi", "PBI_AUTH_FLOW")
-        or _streamlit_secret_value("powerbi", "auth_flow")
-    )
-    auth_flow = str(os.getenv("PBI_AUTH_FLOW") or secret_auth_flow or "device_code").strip().lower()
-    return auth_flow in {"device", "device_code", "device-code", "cloud"}
-
-
-def _tenant_specific_authority(authority, tenant_id):
-    """Return an Entra authority URL that includes a concrete tenant when available."""
-    authority = str(authority or "").strip().rstrip("/")
-    tenant_id = str(tenant_id or "").strip()
-    if not authority or not tenant_id:
-        return authority
-
-    authority_parts = authority.split("/")
-    if authority_parts[-1].lower() in _GENERIC_AAD_AUTHORITY_TENANTS:
-        authority_parts[-1] = tenant_id
-        return "/".join(authority_parts)
-
-    if authority.lower() in {"https://login.microsoftonline.com", "http://login.microsoftonline.com"}:
-        return f"{authority}/{tenant_id}"
-
-    return authority
-
-
-def _clear_device_flow_state():
-    st.session_state.pop(_DEVICE_FLOW_STATE_KEY, None)
+    return
 
 
 def _fabric_scopes(config_result=None):
@@ -459,177 +180,29 @@ def _try_acquire_fabric_token_silent(clientapp, config_result=None):
     if not clientapp:
         return None, "The MasterUser MSAL client is unavailable."
 
-    last_error = "No signed-in account was found in the MSAL cache."
+    setup_identity = (
+        (((_runtime_setup_state() or {}).get("credentials") or {}).get("powerbi") or {}).get(
+            "identity"
+        )
+        or {}
+    )
+    expected_home_account_id = str(setup_identity.get("home_account_id") or "").strip()
+    expected_principal_id = str(setup_identity.get("principal_id") or "").strip()
+    last_error = "The signed-in Power BI account was not found in the MSAL cache."
     for account in clientapp.get_accounts() or []:
+        account_claims = account.get("id_token_claims") or {}
+        if expected_home_account_id and str(account.get("home_account_id") or "") != expected_home_account_id:
+            continue
+        if expected_principal_id and str(
+            account.get("local_account_id") or account_claims.get("oid") or ""
+        ) != expected_principal_id:
+            continue
         response = clientapp.acquire_token_silent(scopes=_fabric_scopes(config_result), account=account)
         if response and response.get("access_token"):
             return response, None
         if response:
             last_error = response.get("error_description") or response.get("error") or last_error
     return None, last_error
-
-
-def _render_device_flow_instructions(flow):
-    verification_uri = (
-        flow.get("verification_uri")
-        or flow.get("verification_url")
-        or "https://microsoft.com/devicelogin"
-    )
-    user_code = str(flow.get("user_code") or "").strip()
-    if user_code:
-        st.info(f"Open {verification_uri} and enter this code to sign in:")
-        st.code(user_code)
-    message = str(flow.get("message") or "").strip()
-    if message:
-        st.caption(message)
-
-
-def _start_master_user_device_flow(clientapp, scope):
-    flow = clientapp.initiate_device_flow(scopes=scope)
-    if "user_code" not in flow:
-        error_message = (
-            flow.get("error_description")
-            or flow.get("error")
-            or "Microsoft Entra did not return a device code."
-        )
-        raise Exception(f"Could not start device-code sign-in: {error_message}")
-
-    flow.setdefault("created_at", time.time())
-    if not flow.get("expires_at"):
-        flow["expires_at"] = time.time() + int(flow.get("expires_in", 900))
-    st.session_state[_DEVICE_FLOW_STATE_KEY] = flow
-    _render_device_flow_instructions(flow)
-    st.info("After approving the sign-in, return here and click 'I completed sign-in'.")
-    return None
-
-
-def _acquire_master_user_device_token(clientapp, scope):
-    flow = st.session_state.get(_DEVICE_FLOW_STATE_KEY)
-    if not isinstance(flow, dict) or float(flow.get("expires_at", 0)) <= time.time():
-        return _start_master_user_device_flow(clientapp, scope)
-
-    response = clientapp.acquire_token_by_device_flow(
-        flow,
-        exit_condition=lambda current_flow: True,
-    )
-    if response and "access_token" in response:
-        _clear_device_flow_state()
-        return response
-
-    error = (response or {}).get("error")
-    if error in {"authorization_pending", "slow_down"}:
-        st.session_state[_DEVICE_FLOW_STATE_KEY] = flow
-        _render_device_flow_instructions(flow)
-        st.info("Microsoft is still waiting for the sign-in approval.")
-        return None
-
-    if error == "expired_token":
-        _clear_device_flow_state()
-        raise Exception("The device code expired. Start sign-in again.")
-
-    error_description = (
-        (response or {}).get("error_description")
-        or error
-        or "Token response did not contain access_token"
-    )
-    raise Exception(error_description)
-
-def get_access_token(auth_mode, prompt_behavior="select_account"):
-    """Create a fresh MSAL token for the requested authentication mode.
-
-    In Master User only mode we must not silently reuse an old browser/account
-    session when the user clicks Logout and logs in again. Passing
-    ``prompt=select_account`` forces Microsoft Entra ID to show the account
-    picker. This gives the user a clean re-login path even when the browser
-    still has Microsoft cookies from an earlier session.
-    """
-    config_result = Utils.validate_config(auth_mode)
-    if isinstance(config_result, str):
-        raise Exception(config_result)
-
-    authenticate_mode = config_result["authenticate_mode"]
-    tenant_id = config_result["tenant_id"]
-    client_id = config_result["client_id"]
-    client_secret = config_result["client_secret"]
-    scope = config_result["scope"]
-    authority = config_result["authority"]
-    response = None
-
-    try:
-        if authenticate_mode.lower() == 'masteruser':
-            authority = _tenant_specific_authority(authority, tenant_id)
-            clientapp = msal.PublicClientApplication(client_id=client_id, authority=authority)
-            if _use_device_code_auth():
-                response = _acquire_master_user_device_token(clientapp, scope)
-                if response is None:
-                    return None
-            else:
-                try:
-                    # Force a clean account picker on every login attempt.
-                    response = clientapp.acquire_token_interactive(scopes=scope, prompt=prompt_behavior)
-                except TypeError:
-                    # Compatibility fallback for older MSAL versions that may not
-                    # support the prompt argument. The app will still clear all
-                    # Streamlit/session state before this call.
-                    response = clientapp.acquire_token_interactive(scopes=scope)
-        else:
-            authority = _tenant_specific_authority(authority, tenant_id)
-            clientapp = msal.ConfidentialClientApplication(client_id, client_credential=client_secret, authority=authority)
-            response = clientapp.acquire_token_for_client(scopes=scope)
-
-        if not response or 'access_token' not in response:
-            error_description = (response or {}).get('error_description') or (response or {}).get('error') or 'Token response did not contain access_token'
-            raise Exception(error_description)
-
-        return response, clientapp
-
-    except Exception as ex:
-        raise Exception('Error retrieving Access token\n' + str(ex))
-
-def get_all_tokens(prompt_behavior="select_account"):
-    """Authenticate only with the delegated Master User account.
-
-    Earlier versions authenticated three identities:
-    1. MasterUser
-    2. ServicePrincipal
-    3. ServicePrincipal-Admin
-
-    This version intentionally uses only MasterUser everywhere. To avoid touching the
-    complete UI/data-flow contract, the same MasterUser token is assigned to the
-    existing mu/sp/spa keys. All REST API, Admin API, App API, ExecuteQueries, and
-    XMLA calls therefore run under the same delegated user identity.
-    """
-    try:
-        token_result = get_access_token("MasterUser", prompt_behavior=prompt_behavior)
-        if token_result is None:
-            return None
-        mu_resp, clientapp_mu = token_result
-        master_token = mu_resp['access_token']
-        config_result = Utils.validate_config("MasterUser")
-        fabric_resp, fabric_error = _try_acquire_fabric_token_silent(
-            clientapp_mu,
-            config_result if isinstance(config_result, dict) else None,
-        )
-
-        data = {
-            "auth_mode": "MasterUserOnly",
-            "mu": master_token,
-            "sp": master_token,
-            "spa": master_token,
-            "fabric": (fabric_resp or {}).get("access_token"),
-            "fabric_error": fabric_error,
-            "fabric_expires_at": time.time() + (fabric_resp or {}).get('expires_in', 0),
-            "expires_at": time.time() + mu_resp.get('expires_in', 3599),
-            "login_time": time.time(),
-            "clientapp_mu": clientapp_mu,
-            "clientapp_sp": None,
-            "clientapp_spa": None,
-        }
-        _persist_browser_auth(data)
-        return data
-    except Exception as e:
-        st.error(f"Login failed: {e}")
-        return None
 
 
 def _store_fabric_token_response(response, error=None):
@@ -639,7 +212,7 @@ def _store_fabric_token_response(response, error=None):
         bundle["fabric_expires_at"] = time.time() + response.get("expires_in", 3599)
         bundle["fabric_error"] = None
     elif error:
-        bundle["fabric_error"] = str(error)
+        bundle["fabric_error"] = "Optional Fabric report-definition authorization is unavailable."
     st.session_state.auth_bundle = bundle
     _persist_browser_auth(bundle)
 
@@ -652,10 +225,10 @@ def _fabric_headers_from_session():
     if token and expires_at > time.time() + 30:
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    config_result = Utils.validate_config("MasterUser")
+    config_result = _runtime_powerbi_config()
     response, error = _try_acquire_fabric_token_silent(
         bundle.get("clientapp_mu"),
-        config_result if isinstance(config_result, dict) else None,
+        config_result,
     )
     _store_fabric_token_response(response, error)
     if response and response.get("access_token"):
@@ -666,116 +239,26 @@ def _fabric_headers_from_session():
     return None
 
 
-def _new_fabric_device_flow():
-    config_result = Utils.validate_config("MasterUser")
-    if isinstance(config_result, str):
-        raise RuntimeError(config_result)
-    authority = _tenant_specific_authority(config_result["authority"], config_result["tenant_id"])
-    clientapp = msal.PublicClientApplication(client_id=config_result["client_id"], authority=authority)
-    flow = clientapp.initiate_device_flow(scopes=_fabric_scopes(config_result))
-    if "user_code" not in flow:
-        message = flow.get("error_description") or flow.get("error") or "Microsoft Entra did not return a device code."
-        raise RuntimeError(f"Could not start Fabric authorization: {message}")
-    flow.setdefault("created_at", time.time())
-    if not flow.get("expires_at"):
-        flow["expires_at"] = time.time() + int(flow.get("expires_in", 900))
-    st.session_state[_FABRIC_DEVICE_FLOW_STATE_KEY] = flow
-    return flow
-
-
-def _poll_fabric_device_flow():
-    flow = st.session_state.get(_FABRIC_DEVICE_FLOW_STATE_KEY)
-    if not isinstance(flow, dict) or float(flow.get("expires_at", 0)) <= time.time():
-        st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
-        return None, "The Fabric authorization code expired. Start authorization again."
-
-    config_result = Utils.validate_config("MasterUser")
-    if isinstance(config_result, str):
-        return None, config_result
-    authority = _tenant_specific_authority(config_result["authority"], config_result["tenant_id"])
-    clientapp = msal.PublicClientApplication(client_id=config_result["client_id"], authority=authority)
-    response = clientapp.acquire_token_by_device_flow(flow, exit_condition=lambda current_flow: True)
-    if response and response.get("access_token"):
-        st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
-        _store_fabric_token_response(response)
-        return response, None
-
-    error = (response or {}).get("error")
-    if error in {"authorization_pending", "slow_down"}:
-        return None, None
-    st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
-    message = (response or {}).get("error_description") or error or "Fabric token was not returned."
-    return None, message
-
-
 def render_fabric_definition_authorization(scope_key):
-    """Render an on-demand authorization step when silent Fabric token acquisition was unavailable."""
+    """Use optional same-user Fabric authorization when tenant consent permits it."""
     headers = _fabric_headers_from_session()
     if headers:
         return headers
 
-    st.warning("Automatic report layout retrieval needs a one-time Fabric API authorization for this session.")
-    flow = st.session_state.get(_FABRIC_DEVICE_FLOW_STATE_KEY)
-    if isinstance(flow, dict):
-        _render_device_flow_instructions(flow)
-        complete_col, restart_col = st.columns(2)
-        with complete_col:
-            if st.button("I completed Fabric authorization", type="primary", key=f"{scope_key}_fabric_auth_complete"):
-                response, error = _poll_fabric_device_flow()
-                if response:
-                    st.rerun()
-                elif error:
-                    st.error(error)
-                else:
-                    st.info("Microsoft is still waiting for authorization approval.")
-        with restart_col:
-            if st.button("Restart Fabric authorization", key=f"{scope_key}_fabric_auth_restart"):
-                st.session_state.pop(_FABRIC_DEVICE_FLOW_STATE_KEY, None)
-                st.rerun()
-        return None
-
-    if st.button("Authorize automatic report layouts", key=f"{scope_key}_fabric_auth_start"):
-        try:
-            _new_fabric_device_flow()
-            st.rerun()
-        except Exception as exc:
-            st.error(str(exc))
+    st.warning(
+        "Optional Fabric report-definition access is unavailable. Definition-based "
+        "visual evidence will use its configured fallbacks; an administrator must "
+        "grant the separate Fabric permission to enable it."
+    )
     return None
 
 
 def get_confidential_client_auth_header(auth_mode):
-    """Acquire a real service-principal token for a targeted tester flow."""
-    config_result = Utils.validate_config(auth_mode)
-    if isinstance(config_result, str):
-        raise RuntimeError(config_result)
-
-    authenticate_mode = str(config_result.get("authenticate_mode") or auth_mode).lower()
-    if authenticate_mode == "masteruser":
-        raise RuntimeError("MasterUser uses the existing delegated interactive login token.")
-
-    tenant_id = config_result["tenant_id"]
-    authority = _tenant_specific_authority(config_result["authority"], tenant_id)
-    client_id = config_result["client_id"]
-    client_secret = config_result.get("client_secret")
-    scope = config_result["scope"]
-
-    if not client_secret:
-        raise RuntimeError(f"Missing client_secret for {auth_mode} in config/powerbi_auth_config.json.")
-
-    clientapp = msal.ConfidentialClientApplication(
-        client_id,
-        client_credential=client_secret,
-        authority=authority,
+    """Reject legacy file-backed service-principal configuration paths."""
+    raise RuntimeError(
+        "Service-principal credentials are disabled in session-only setup. "
+        "Use the delegated Microsoft browser session."
     )
-    response = clientapp.acquire_token_for_client(scopes=scope)
-    if not response or "access_token" not in response:
-        message = (response or {}).get("error_description") or (response or {}).get("error") or "Token response did not contain access_token"
-        raise RuntimeError(f"{auth_mode} token acquisition failed: {message}")
-
-    return {
-        "Authorization": f"Bearer {response['access_token']}",
-        "Content-Type": "application/json",
-    }
     
 def remove_tokens_for_client(clientapp_mu, clientapp_sp=None, clientapp_spa=None):
     """Best-effort removal of MSAL token-cache entries from existing client apps."""
@@ -784,20 +267,20 @@ def remove_tokens_for_client(clientapp_mu, clientapp_sp=None, clientapp_spa=None
             accounts = clientapp_mu.get_accounts()
             for account in accounts:
                 clientapp_mu.remove_account(account)
-    except Exception as ex:
-        print(f"Master user token cleanup warning: {ex}")
+    except Exception:
+        print("Master user token cleanup warning: cache cleanup was incomplete.")
 
     try:
         if clientapp_sp:
             clientapp_sp.remove_tokens_for_client()
-    except Exception as ex:
-        print(f"Service principal token cleanup warning: {ex}")
+    except Exception:
+        print("Service principal token cleanup warning: cache cleanup was incomplete.")
 
     try:
         if clientapp_spa:
             clientapp_spa.remove_tokens_for_client()
-    except Exception as ex:
-        print(f"Service principal admin token cleanup warning: {ex}")
+    except Exception:
+        print("Service principal admin token cleanup warning: cache cleanup was incomplete.")
 
 def clear_streamlit_session_state(keep_auth=False):
     """Clear Streamlit auth and data cache keys for clean logout/re-login.
@@ -808,6 +291,7 @@ def clear_streamlit_session_state(keep_auth=False):
     workspace/report/dataset results from the previous token.
     """
     if not keep_auth:
+        close_setup_resources(_runtime_setup_state())
         _forget_browser_auth()
         _forget_shared_app_state()
 
@@ -818,6 +302,7 @@ def clear_streamlit_session_state(keep_auth=False):
 
     if not keep_auth:
         st.session_state.auth_bundle = None
+
 
 def logout_and_clear_session():
     """Remove MSAL accounts and clear all Streamlit runtime state."""
@@ -864,32 +349,88 @@ def _set_browser_title(workflow_mode):
 
 # --- POWER BI REST API FUNCTIONS ---
 
+def _configured_powerbi_scope():
+    state = _runtime_setup_state()
+    if not state:
+        return None
+    powerbi = ((state.get("public") or {}).get("powerbi") or {})
+    mode = str(powerbi.get("scope_mode") or "all_accessible").strip().casefold()
+    if mode == "all_accessible":
+        return None
+    return {
+        "mode": mode,
+        "workspace_id": str(powerbi.get("workspace_id") or "").strip(),
+        "report_ids": {
+            str(value or "").strip().casefold()
+            for value in powerbi.get("report_ids") or []
+            if str(value or "").strip()
+        },
+    }
+
 def get_workspace_inventory(headers):
-    ws_url = "https://api.powerbi.com/v1.0/myorg/groups"
-    response = requests.get(ws_url, headers=headers)
-    if response.status_code == 200:
-        return filter_excluded_workspaces(response.json().get('value', []))
-    return []
+    ws_url = "https://api.powerbi.com/v1.0/myorg/groups?$top=5000"
+    workspaces = []
+    while ws_url:
+        response = requests.get(ws_url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            return []
+        try:
+            payload = response.json()
+        except Exception:
+            return []
+        if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
+            return []
+        workspaces.extend(payload.get("value") or [])
+        ws_url = str(payload.get("@odata.nextLink") or "").strip()
+
+    workspaces = filter_excluded_workspaces(workspaces)
+    scope = _configured_powerbi_scope()
+    if scope and scope.get("workspace_id"):
+        expected = scope["workspace_id"].casefold()
+        workspaces = [
+            workspace
+            for workspace in workspaces
+            if str(workspace.get("id") or "").strip().casefold() == expected
+        ]
+    return workspaces
 
 def get_all_app_details(headers):
-    apps_data = []
-    scan_url = "https://api.powerbi.com/v1.0/myorg/admin/apps?$top=50" 
-    while scan_url:
-        response = requests.get(scan_url, headers=headers)
-        if response.status_code != 200:
-            break
-        data = response.json()
-        if 'value' in data:
-            apps_data.extend(data['value'])
-        scan_url = data.get('@odata.nextLink', None)
-    return apps_data
+    # An explicit workspace/report scope excludes tenant-wide Power BI apps.
+    # With no optional scope, the normal accessible app inventory remains valid.
+    if _configured_powerbi_scope():
+        return []
+    response = requests.get(
+        "https://api.powerbi.com/v1.0/myorg/apps",
+        headers=headers,
+        timeout=30,
+    )
+    if response.status_code != 200:
+        return []
+    try:
+        payload = response.json()
+    except Exception:
+        return []
+    return payload.get("value", []) if isinstance(payload, dict) else []
 
 def get_artifacts(headers, workspace_id, artifact_type):
+    scope = _configured_powerbi_scope()
+    if scope and str(workspace_id or "").strip().casefold() != str(
+        scope.get("workspace_id") or ""
+    ).casefold():
+        return []
     endpoint = "reports" if artifact_type == 'report' else "dashboards"
     url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/{endpoint}"
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=30)
     if response.status_code == 200:
-        return response.json().get('value', [])
+        artifacts = response.json().get('value', [])
+        if scope and artifact_type == "report" and scope.get("report_ids"):
+            allowed = scope.get("report_ids") or set()
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("id") or "").strip().casefold() in allowed
+            ]
+        return artifacts
     return []
 
 def get_workspace_users(headers, workspace_id):
@@ -3590,7 +3131,11 @@ def render_powerbi_js_visual_scanner(
 <html>
 <head>
   <meta charset="UTF-8" />
-  <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"
+    integrity="sha384-fQPeMfjdtgCK12Qc+Nf6MXgVkTFu/9GEGi8IARBPvg0MxEJ+0vo88ViuO54qE4UU"
+    crossorigin="anonymous"
+    referrerpolicy="no-referrer"></script>
   <style>
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -6727,19 +6272,47 @@ def _enrich_with_source_details(base_row, semantic_table, semantic_column, sourc
     }
 
 
+def _runtime_app_settings():
+    """Build application settings from safe defaults plus this session only."""
+    settings = copy.deepcopy(Utils.DEFAULT_APP_SETTINGS)
+    state = _runtime_setup_state()
+    if not state:
+        return settings
+
+    if snowflake_is_ready(state):
+        snowflake_settings = snowflake_connection_settings(state)
+        settings["snowflake_lineage"] = {
+            **dict(settings.get("snowflake_lineage") or {}),
+            **snowflake_settings,
+        }
+        settings["snowflake_cortex"] = {
+            **dict(settings.get("snowflake_cortex") or {}),
+            **{
+                key: value
+                for key, value in snowflake_settings.items()
+                if key in {"account", "user", "authenticator", "role", "warehouse", "database"}
+            },
+        }
+    settings["claude"] = claude_runtime_settings(
+        state,
+        defaults=settings.get("claude") or {},
+    )
+    return settings
+
+
 def _get_snowflake_cortex_settings():
-    """Return Snowflake Cortex measure-detail settings from config/app_settings.json."""
-    return (Utils.load_app_settings().get("snowflake_cortex") or {}).copy()
+    """Return session-only Snowflake Cortex measure-detail settings."""
+    return (_runtime_app_settings().get("snowflake_cortex") or {}).copy()
 
 
 def _get_claude_settings():
-    """Return direct Anthropic settings shared by the agent and measure details."""
-    return (Utils.load_app_settings().get("claude") or {}).copy()
+    """Return session-only Anthropic settings shared by PowerAI features."""
+    return (_runtime_app_settings().get("claude") or {}).copy()
 
 
 def _get_measure_definition_provider_order():
     """Return provider order for on-demand measure details."""
-    settings = Utils.load_app_settings()
+    settings = _runtime_app_settings()
     configured = (settings.get("measure_definition") or {}).get("provider_order") or []
     if isinstance(configured, str):
         configured = [item.strip() for item in configured.split(",")]
@@ -6754,7 +6327,7 @@ def _get_measure_definition_provider_order():
 
 def _get_default_measure_definition_provider():
     """Return the default provider choice shown in the UI."""
-    settings = Utils.load_app_settings()
+    settings = _runtime_app_settings()
     default_provider = (settings.get("measure_definition") or {}).get("default_provider") or "auto"
     default_provider = str(default_provider or "auto").strip().lower()
     if default_provider in {"snowflake_metadata", "metadata", "metadata_fallback"}:
@@ -7300,8 +6873,8 @@ def _snowflake_handoff_search_label(row, include_source_column=False):
 
 
 def _get_snowflake_lineage_settings():
-    """Return Snowflake lineage settings from config/app_settings.json."""
-    return (Utils.load_app_settings().get("snowflake_lineage") or {}).copy()
+    """Return session-only Snowflake lineage settings."""
+    return (_runtime_app_settings().get("snowflake_lineage") or {}).copy()
 
 
 def _snowflake_object_domain_from_row(row):
@@ -7322,38 +6895,65 @@ def _snowflake_object_domain_from_row(row):
 def _merged_snowflake_connection_settings(feature_settings=None):
     settings = _get_snowflake_lineage_settings()
     for key, value in (feature_settings or {}).items():
-        if key in {"account", "user", "password", "authenticator", "role", "warehouse", "database", "schema"}:
+        if key in {"account", "user", "authenticator", "role", "warehouse", "database", "schema"}:
             if str(value or "").strip():
                 settings[key] = value
+    settings.pop("password", None)
+    settings["authenticator"] = "externalbrowser"
     return settings
 
 
 def _connect_snowflake(settings, config_name="snowflake_lineage"):
-    try:
-        import snowflake.connector  # type: ignore
-    except Exception as exc:
+    """Return the already validated session-only Snowflake SSO connection."""
+    state = _runtime_setup_state()
+    snowflake_credentials = (
+        ((state or {}).get("credentials") or {}).get("snowflake") or {}
+    )
+    connection = snowflake_credentials.get("connection")
+    if connection is None:
         raise RuntimeError(
-            "snowflake-connector-python is required for Snowflake features. "
-            "Install dependencies with: pip install -r requirements.txt"
+            "The Snowflake SSO session is not active. Sign out and complete runtime setup again."
+        )
+
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        finally:
+            cursor.close()
+    except Exception as exc:
+        try:
+            connection.close()
+        except Exception:
+            pass
+        snowflake_credentials["connection"] = None
+        if isinstance(state, dict):
+            state.setdefault("status", {})["snowflake"] = {
+                "state": "timed_out",
+                "message": "The Snowflake SSO session expired. Reconnect to continue.",
+            }
+            state["complete"] = False
+            state["phase"] = "snowflake_reconnect_required"
+        st.session_state["_purge_connection_data_next_run_v1"] = True
+        raise RuntimeError(
+            "The Snowflake SSO session expired. Reconnect it from the sidebar."
         ) from exc
+    return connection
 
-    required = ["account", "user"]
-    missing = [key for key in required if not str(settings.get(key) or "").strip()]
-    if missing:
-        raise RuntimeError(f"Missing {config_name} config: {', '.join(missing)}")
 
-    connect_kwargs = {
-        "account": str(settings.get("account")).strip(),
-        "user": str(settings.get("user")).strip(),
-        "authenticator": str(settings.get("authenticator") or "snowflake").strip(),
-    }
-    optional_keys = ["password", "role", "warehouse", "database", "schema"]
-    for key in optional_keys:
-        value = str(settings.get(key) or "").strip()
-        if value:
-            connect_kwargs[key] = value
-
-    return snowflake.connector.connect(**connect_kwargs)
+def _release_snowflake_connection(connection):
+    """Leave the setup-owned connection open for later session operations."""
+    state = _runtime_setup_state()
+    runtime_connection = (
+        (((state or {}).get("credentials") or {}).get("snowflake") or {}).get("connection")
+    )
+    if connection is runtime_connection:
+        return
+    try:
+        connection.close()
+    except Exception:
+        pass
 
 
 def _connect_snowflake_for_lineage(settings):
@@ -7624,7 +7224,7 @@ def get_snowflake_metadata_measure_definition(row, settings, provider_errors=Non
         _set_snowflake_statement_timeout(conn, settings.get("timeout_seconds") or 120)
         metadata = _fetch_snowflake_object_metadata(conn, source_fqn, source_column)
     finally:
-        conn.close()
+        _release_snowflake_connection(conn)
     return _build_metadata_measure_definition(row, metadata, provider_errors=provider_errors)
 
 
@@ -7632,11 +7232,11 @@ def _call_snowflake_cortex_measure_definition(row, settings):
     """Open Snowflake, call Cortex AI_COMPLETE for one selected measure, then close it."""
     model = str(settings.get("model") or "").strip()
     if not model:
-        raise RuntimeError("Missing snowflake_cortex.model in config/app_settings.json.")
+        raise RuntimeError("The runtime Snowflake Cortex model is not configured.")
 
     instructions = str(settings.get("instructions") or "").strip()
     if not instructions:
-        raise RuntimeError("Missing snowflake_cortex.instructions in config/app_settings.json.")
+        raise RuntimeError("The runtime Snowflake Cortex instructions are not configured.")
 
     function_name = str(settings.get("function") or "AI_COMPLETE").strip().upper()
     if function_name not in {"AI_COMPLETE", "SNOWFLAKE.CORTEX.COMPLETE"}:
@@ -7666,7 +7266,7 @@ def _call_snowflake_cortex_measure_definition(row, settings):
         finally:
             cursor.close()
     finally:
-        conn.close()
+        _release_snowflake_connection(conn)
 
     definition = str((result or [""])[0] or "").strip()
     if not definition:
@@ -7691,7 +7291,7 @@ def get_measure_definition(row, provider_choice="auto"):
         if provider in {"snowflake_cortex", "snowflake", "cortex"}:
             if not snowflake_settings.get("enabled", False):
                 if provider_choice not in {"auto", "config_order", "enabled"}:
-                    raise RuntimeError("Enable snowflake_cortex.enabled in config/app_settings.json to use Snowflake Cortex.")
+                    raise RuntimeError("Snowflake Cortex is not enabled for this runtime session.")
                 continue
             tried_any = True
             try:
@@ -7775,10 +7375,12 @@ _COLUMN_LINEAGE_RESULT_COLUMNS = {
 
 
 def _validated_column_lineage_procedure_name(settings):
-    procedure_name = str(
-        settings.get("column_lineage_procedure")
-        or "SALES_ANALYTICS.REPORTING.TRACE_COLUMN_LINEAGE"
-    ).strip()
+    procedure_name = str(settings.get("column_lineage_procedure") or "").strip()
+    if not procedure_name:
+        raise RuntimeError(
+            "Snowflake stored-procedure column lineage is disabled in session-only setup. "
+            "Use Snowflake object lineage or have an administrator approve a read-only procedure."
+        )
     identifier_parts = procedure_name.split(".")
     identifier_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
     if len(identifier_parts) != 3 or any(not identifier_pattern.fullmatch(part) for part in identifier_parts):
@@ -7853,7 +7455,7 @@ def get_snowflake_column_lineage(start_object_name, start_column_name, settings)
             procedure_name,
         )
     finally:
-        conn.close()
+        _release_snowflake_connection(conn)
 
 
 def get_recursive_snowflake_lineage(start_object_name, start_object_domain, settings):
@@ -7912,7 +7514,7 @@ def get_recursive_snowflake_lineage(start_object_name, start_object_domain, sett
 
         return results
     finally:
-        conn.close()
+        _release_snowflake_connection(conn)
 
 
 def _lineage_graph_node_id(object_name, column_name=""):
@@ -8963,7 +8565,7 @@ def render_snowflake_lineage_diagram(lineage_rows, payload, lineage_grain, sourc
 def render_recursive_snowflake_lineage(payload, key_prefix):
     settings = _get_snowflake_lineage_settings()
     if not settings.get("enabled", False):
-        st.info("Enable snowflake_lineage in config/app_settings.json to run recursive Snowflake lineage.")
+        st.info("Connect Snowflake from the sidebar to run database lineage.")
         return
 
     source_object = payload.get("source_fully_qualified_name")
@@ -12100,11 +11702,21 @@ def render_claude_lineage_agent_page(
         metric_columns[1].metric("Reports", len(records))
         metric_columns[2].metric("Semantic models", dataset_count)
 
-    strategy_options = {
-        "Auto (recommended)": "auto",
-        "Single agent": "single",
-        "Multi-agent": "multi",
-    }
+    configured_powerai_mode = str(
+        (((_runtime_setup_state() or {}).get("public") or {}).get("claude") or {}).get(
+            "mode"
+        )
+        or "disabled"
+    ).casefold()
+    strategy_options = (
+        {
+            "Auto (recommended)": "auto",
+            "Single managed agent": "single",
+            "Managed multi-agent": "multi",
+        }
+        if configured_powerai_mode == "managed_multi"
+        else {"Single agent": "single"}
+    )
     configured_strategy = (
         resolved_settings.get("orchestration_mode", "auto")
         if resolved_settings
@@ -12197,12 +11809,7 @@ def render_claude_lineage_agent_page(
 
     if configuration_error:
         st.warning(configuration_error)
-        st.code(
-            '[claude]\n'
-            'enabled = true\n'
-            'api_key = "<anthropic-api-key>"\n'
-            'model = "claude-sonnet-4-6"'
-        )
+        st.info("Use the sidebar PowerAI panel to enable it or replace its session key.")
         return
     if not selected_workspaces:
         st.info("Select at least one workspace.")
@@ -12739,6 +12346,10 @@ def render_powerai_dialog(
 
 def render_powerai_floating_button():
     """Render the fixed PowerAI launcher without resetting the active workflow."""
+    state = _runtime_setup_state()
+    if not (powerbi_is_ready(state) and claude_is_ready(state)):
+        st.session_state[_POWERAI_PANEL_OPEN_KEY] = False
+        return
     with st.container(key="powerai_fab_container"):
         st.markdown('<span class="powerai-fab-anchor"></span>', unsafe_allow_html=True)
         st.button(
@@ -12765,7 +12376,11 @@ def render_powerai_workspace(
     """Render main application content and open PowerAI as a modal when requested."""
     render_main()
     render_powerai_floating_button()
-    if bool(st.session_state.get(_POWERAI_PANEL_OPEN_KEY, False)):
+    if (
+        powerbi_is_ready(_runtime_setup_state())
+        and claude_is_ready(_runtime_setup_state())
+        and bool(st.session_state.get(_POWERAI_PANEL_OPEN_KEY, False))
+    ):
         render_powerai_dialog(
             headersSPA,
             headersSP,
@@ -13323,7 +12938,6 @@ from pbi_modules.table_impact import (
     table_value_matches,
 )
 
-_ensure_browser_auth_cookie()
 
 st.markdown(
     """
@@ -13464,14 +13078,14 @@ st.markdown(
         }
         section[data-testid="stSidebar"]:has(.lineage-sidebar-brand) {
             display: block;
-            width: 252px !important;
-            min-width: 252px !important;
+            width: 330px !important;
+            min-width: 330px !important;
             background: #f8fafc;
             border-right: 1px solid #dbe3ef;
             box-shadow: 8px 0 24px rgba(30, 64, 175, 0.04);
         }
         section[data-testid="stSidebar"]:has(.lineage-sidebar-brand) > div {
-            width: 252px !important;
+            width: 330px !important;
             background: #f8fafc;
         }
         section[data-testid="stSidebar"]:not(:has(.lineage-sidebar-brand)),
@@ -14181,8 +13795,8 @@ st.markdown(
         @media (max-width: 900px) {
             section[data-testid="stSidebar"],
             section[data-testid="stSidebar"] > div {
-                width: min(82vw, 252px) !important;
-                min-width: min(82vw, 252px) !important;
+                width: min(88vw, 330px) !important;
+                min-width: min(88vw, 330px) !important;
             }
             button[data-testid="stExpandSidebarButton"],
             [data-testid="stSidebarCollapseButton"] {
@@ -14257,25 +13871,65 @@ st.markdown(
 
 if 'auth_bundle' not in st.session_state:
     st.session_state.auth_bundle = None
-if not st.session_state.auth_bundle:
-    restored_auth_bundle = _restore_browser_auth()
-    if restored_auth_bundle:
-        st.session_state.auth_bundle = restored_auth_bundle
 if 'workflow_mode' not in st.session_state:
     st.session_state.workflow_mode = "landing"
 
 
 # --- APP ROUTING ---
-if not check_authenticated_session(logout_and_clear_session):
-    render_login_page(clear_streamlit_session_state, get_all_tokens)
-    st.stop()
+runtime_setup = ensure_setup_state(_runtime_setup_state())
+st.session_state[SETUP_STATE_KEY] = runtime_setup
+reconcile_setup_state(runtime_setup)
+if st.session_state.pop("_purge_connection_data_next_run_v1", False):
+    purge_connection_derived_state(
+        preserve_auth_bundle=powerbi_is_ready(runtime_setup)
+    )
+    st.rerun()
+pbi_connected = powerbi_is_ready(runtime_setup)
+if pbi_connected:
+    if not st.session_state.get("auth_bundle"):
+        try:
+            st.session_state.auth_bundle = legacy_auth_bundle(runtime_setup, msal)
+        except Exception:
+            disconnect_powerbi(runtime_setup, keep_configuration=True)
+            st.session_state.auth_bundle = None
+            purge_connection_derived_state(preserve_auth_bundle=False)
+            pbi_connected = False
+else:
+    stale_bundle = st.session_state.get("auth_bundle") or {}
+    if isinstance(stale_bundle, dict) and stale_bundle:
+        remove_tokens_for_client(
+            stale_bundle.get("clientapp_mu"),
+            stale_bundle.get("clientapp_sp"),
+            stale_bundle.get("clientapp_spa"),
+        )
+        purge_connection_derived_state(preserve_auth_bundle=False)
+    st.session_state.auth_bundle = None
 
-_hydrate_shared_app_state()
-apply_workflow_query_params()
-
-headersMU = {'Authorization': f"Bearer {st.session_state.auth_bundle['mu']}", 'Content-Type': 'application/json'}
-headersSP = headersMU
-headersSPA = headersMU
+if pbi_connected and st.session_state.get("auth_bundle"):
+    headersMU = {
+        'Authorization': f"Bearer {st.session_state.auth_bundle['mu']}",
+        'Content-Type': 'application/json',
+    }
+    headersSP = headersMU
+    headersSPA = headersMU
+    _hydrate_shared_app_state()
+    if (
+        str(st.query_params.get("workflow") or "").strip() == "report_lineage"
+        and not st.session_state.get("direct_lookup_report_records_v3")
+    ):
+        try:
+            get_accessible_inventory(
+                headersSP,
+                get_workspace_inventory,
+                get_artifacts,
+            )
+        except Exception:
+            pass
+    apply_workflow_query_params()
+else:
+    headersMU = {}
+    headersSP = {}
+    headersSPA = {}
 
 workflow_mode = st.session_state.get("workflow_mode", "landing")
 if workflow_mode == "direct_measure":
@@ -14292,6 +13946,9 @@ if workflow_mode not in {
     "table_impact",
     "measure_impact",
 }:
+    workflow_mode = "landing"
+    st.session_state.workflow_mode = workflow_mode
+if not pbi_connected and workflow_mode != "landing":
     workflow_mode = "landing"
     st.session_state.workflow_mode = workflow_mode
 

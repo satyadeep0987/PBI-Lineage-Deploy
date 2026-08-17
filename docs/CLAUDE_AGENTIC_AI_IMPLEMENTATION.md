@@ -49,18 +49,17 @@ credentials are never sent to Claude.
 | `pbi_modules/analysis_document.py` | Creates Markdown documentation locally from only the completed answer; no model request is made for document preparation |
 | `pbi_modules/app_shell.py` | Adds `Claude Agent` as the first sidebar destination |
 | `streamlit_app.py` | Adds the agent page, cached estate-wide shared evidence, permission-scoped tool executor, strategy control, routing, and Claude measure definitions |
-| `utils.py` | Replaces OpenAI defaults with the shared `claude` configuration |
+| `utils.py` | Supplies built-in, non-secret Claude behavior defaults |
 | `tls_trust.py` | Applies an approved custom CA bundle to the HTTPX-based Anthropic SDK |
-| `config/app_settings.template.json` | Documents safe direct and Managed Agent settings with no populated secret |
-| `.streamlit/secrets.toml.example` | Documents direct and Managed Agent Streamlit Secrets configuration |
-| `config/app_settings.json` | Local ignored configuration is migrated without preserving the OpenAI key |
+| `pbi_modules/setup_controller.py` | Validates direct/managed runtime parameters and retains the API key only in session memory |
+| `pbi_modules/connection_sidebar.py` | Provides the independent masked API-key control and managed-agent ID fields |
 | `requirements.txt` | Adds the official `anthropic` Python SDK |
 | `README.md` | Replaces OpenAI setup and cloud capability text with Claude |
 | `Test/test_claude_agent.py` | Tests configuration, text generation, tool execution, scope limits, and tool-round limits |
 | `Test/test_claude_multi_agent.py` | Tests single-agent routing, specialist selection, shared evidence, reviewer/coordinator execution, and request-run caps |
 | `docs/CLAUDE_MULTI_AGENT_GUIDE.md` | Detailed setup, code map with function references, budget behavior, outputs, and troubleshooting |
 
-## Claude Configuration
+## Claude Runtime Setup
 
 The application uses the direct Anthropic endpoint rather than Microsoft
 Foundry:
@@ -69,56 +68,17 @@ Foundry:
 https://api.anthropic.com
 ```
 
-Recommended Streamlit Secrets:
-
-```toml
-[claude]
-enabled = true
-api_key = "<anthropic-api-key>"
-base_url = "https://api.anthropic.com"
-model = "claude-sonnet-4-6"
-timeout_seconds = 90
-max_tokens = 1800
-measure_definition_max_tokens = 900
-temperature = 0
-max_tool_rounds = 6
-max_tool_result_chars = 30000
-history_messages = 12
-orchestration_mode = "auto"
-max_specialist_agents = 3
-max_agent_calls = 4
-max_total_input_tokens = 30000
-max_total_output_tokens = 3600
-max_estimated_cost_usd = 0.08
-specialist_max_tokens = 700
-evidence_reviewer_max_tokens = 500
-coordinator_max_tokens = 900
-shared_evidence_max_chars = 6000
-```
+Choose **Disabled**, **Single agent**, or **Managed multi-agent** on the runtime
+sidebar. Single agent uses one API key. Managed multi-agent uses that same key
+plus the environment ID and all seven role-specific agent IDs. The key is entered
+only after Microsoft browser authorization, held in `st.session_state`, and
+cleared on logout. No local credential file or environment fallback is used.
 
 ### Claude Managed Agents
 
-To use agents already created in Claude Console, retain the same `api_key` and
-add the following to the same secret store. `environment_id` is the shared
-`env_...` ID; every `agent_...` value is the ID copied from the corresponding
-Claude Console agent. Do not add Power BI, Snowflake, or Entra credentials to
-the Claude agent configuration.
-
-```toml
-[claude]
-agent_runtime = "managed"
-
-[claude.managed_agents]
-enabled = true
-environment_id = "env_<your-managed-environment-id>"
-general_lineage_agent_id = "agent_<general-lineage-agent-id>"
-powerbi_semantic_agent_id = "agent_<powerbi-semantic-agent-id>"
-visual_evidence_agent_id = "agent_<visual-evidence-agent-id>"
-snowflake_lineage_agent_id = "agent_<snowflake-lineage-agent-id>"
-impact_analysis_agent_id = "agent_<impact-analysis-agent-id>"
-evidence_reviewer_agent_id = "agent_<evidence-reviewer-agent-id>"
-coordinator_agent_id = "agent_<coordinator-agent-id>"
-```
+To use agents already created in Claude Console, copy the shared `env_...` ID
+and the seven `agent_...` role IDs into the managed fields in the sidebar. Do
+not add Power BI, Snowflake, or Entra credentials to Claude agent instructions.
 
 For tool-using managed agents, define the seven existing read-only custom tools
 in Claude Console. The app executes them locally with the signed-in user's
@@ -129,17 +89,8 @@ Set `claude.model` to the model family configured in Claude Console so the
 application's request-cost estimate is meaningful; provider billing and actual
 usage come from the Managed Agent session.
 
-Supported environment variables:
-
-```text
-ANTHROPIC_API_KEY
-CLAUDE_ENABLED
-CLAUDE_MODEL
-CLAUDE_BASE_URL
-```
-
-The API key must be stored only in Streamlit Secrets, an environment variable,
-Snowflake Secrets, or another approved secret manager. Do not commit it to Git.
+The API key must be entered only in the masked runtime control. Do not commit it
+to Git, place it in a local file, or pass it through URL parameters.
 
 ## Read-Only Agent Tools
 
@@ -242,13 +193,13 @@ source columns, and bounded source queries.
 
 ### Windows or standalone Streamlit
 
-Allow outbound HTTPS on port 443 to `api.anthropic.com`. Store the API key in
-environment variables or `.streamlit/secrets.toml`.
+Allow outbound HTTPS on port 443 to `api.anthropic.com`. Enter the API key on
+the PowerAI sidebar panel.
 
 ### Streamlit Community Cloud
 
-Add the `[claude]` section in App Settings > Secrets. XMLA-backed tools still
-require a separate Windows backend because Streamlit Community Cloud is Linux.
+Use the connection sidebar. XMLA-backed tools still require a separate Windows
+backend because Streamlit Community Cloud is Linux.
 
 ### Streamlit in Snowflake
 

@@ -1,19 +1,20 @@
 .env
 .env.*
-!.env.example
 
-config/app_settings.json
-config/powerbi_auth_config.json
-config/*.local.json
-config/*credentials*.json
-config/*secret*.json
-!config/*.template.json
-!config/*.example.json
+# Runtime connection configuration is entered through the session setup page.
+# Do not add JSON/YAML/TOML credential or connection files under config/.
+config/*.json
+config/*.yaml
+config/*.yml
+config/*.toml
 
-# Local-only interactive authentication helpers and any test artifacts they create.
-local_test_tools/
+# Local diagnostic outputs. The reusable probe source remains versionable.
+local_test_tools/__pycache__/
+local_test_tools/raw_api_outputs/
+local_test_tools/device_code_run_*.out
+local_test_tools/device_code_run_*.err
 
-.streamlit/secrets.toml
+.streamlit/secrets*.toml
 .streamlit/cache/
 .streamlit/runtime/
 
@@ -44,6 +45,15 @@ Thumbs.db
 Desktop.ini
 
 .codex*
+.agents/
+.ipynb_checkpoints/
+/test.ipynb
 
-APP_CONTEXT.md
-test*
+# Non-production presentation/demo exports belong in separate release bundles.
+/Images/
+/presentations/
+/demo_packages/
+/*.pptx
+/docs/*.doc
+/docs/*.docx
+

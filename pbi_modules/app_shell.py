@@ -1,9 +1,18 @@
 import html
 import hashlib
 import time
-from urllib.parse import urlencode
 
 import streamlit as st
+
+from pbi_modules.setup_controller import (
+    SETUP_STATE_KEY,
+    powerbi_is_ready,
+    powerbi_scope_allows,
+    powerbi_scope_fingerprint,
+    snowflake_is_ready,
+    validated_powerbi_report,
+)
+from pbi_modules.connection_sidebar import render_connection_sidebar
 
 
 _EXCLUDED_WORKSPACE_NAMES = frozenset({"admin monitoring"})
@@ -77,12 +86,6 @@ def _workflow_params(mode, context=None):
     return params
 
 
-def _workflow_url(mode, context=None):
-    """Build a shareable app URL for opening a workflow in another tab."""
-    params = _workflow_params(mode, context)
-    return "?" + urlencode(params)
-
-
 def _replace_workflow_query_params(mode, context=None):
     """Keep the browser URL aligned with the current app workflow."""
     try:
@@ -90,22 +93,6 @@ def _replace_workflow_query_params(mode, context=None):
         st.query_params.update(_workflow_params(mode, context))
     except Exception:
         return
-
-
-def _navigation_link(label, mode, icon, active=False, context=None):
-    """Render a sidebar navigation row as a browser-native link."""
-    url = html.escape(_workflow_url(mode, context), quote=True)
-    safe_label = html.escape(str(label or "Open"))
-    safe_icon = html.escape(str(icon or "").strip())
-    active_class = " is-active" if active else ""
-    return (
-        f'<a class="lineage-nav-link{active_class}" href="{url}" '
-        f'target="_self" '
-        f'title="Open {safe_label}. Use Ctrl-click, middle-click, or right-click to open in a new tab.">'
-        f'<span class="lineage-nav-icon material-symbols-rounded">{safe_icon}</span>'
-        f'<span class="lineage-nav-text">{safe_label}</span>'
-        f'</a>'
-    )
 
 
 def apply_workflow_query_params():
@@ -122,16 +109,42 @@ def apply_workflow_query_params():
     if not report_id:
         return
 
-    record = {
-        "Workspace Name": _query_param_value("workspace_name"),
-        "Workspace ID": _query_param_value("workspace_id"),
-        "Report Name": _query_param_value("report_name"),
-        "Report ID": report_id,
-        "Dataset ID": _query_param_value("dataset_id"),
-        "Dataset Workspace ID": _query_param_value("dataset_workspace_id"),
-        "Report Type": _query_param_value("report_type"),
-        "Report Format": _query_param_value("report_format"),
-    }
+    workspace_id = _query_param_value("workspace_id")
+    setup_state = st.session_state.get(SETUP_STATE_KEY)
+    if isinstance(setup_state, dict) and not powerbi_scope_allows(
+        setup_state,
+        workspace_id,
+        report_id,
+    ):
+        st.session_state.workflow_mode = "landing"
+        st.session_state["powerbi_scope_warning_v1"] = (
+            "The requested report is outside this session's configured Power BI scope."
+        )
+        _replace_workflow_query_params("landing")
+        return
+
+    record = validated_powerbi_report(setup_state, workspace_id, report_id)
+    if record is None:
+        # With no explicit report allowlist, accept deep links only after this
+        # signed-in session has fetched the report from Power BI inventory.
+        for candidate in st.session_state.get("direct_lookup_report_records_v3") or []:
+            if not isinstance(candidate, dict):
+                continue
+            if (
+                str(candidate.get("Workspace ID") or "").strip().casefold()
+                == workspace_id.casefold()
+                and str(candidate.get("Report ID") or "").strip().casefold()
+                == report_id.casefold()
+            ):
+                record = dict(candidate)
+                break
+    if record is None:
+        st.session_state.workflow_mode = "landing"
+        st.session_state["powerbi_scope_warning_v1"] = (
+            "The requested report has not been validated for this runtime session."
+        )
+        _replace_workflow_query_params("landing")
+        return
     context = direct_report_context(record)
     existing = st.session_state.get("direct_measure_active_context")
     if not isinstance(existing, dict) or str(existing.get("Report ID") or "") != report_id:
@@ -148,39 +161,6 @@ def filter_excluded_workspaces(workspaces):
         and str(workspace.get("name") or "").strip().casefold()
         not in _EXCLUDED_WORKSPACE_NAMES
     ]
-
-
-def _render_pending_device_flow(get_all_tokens):
-    """Render the follow-up step for Microsoft device-code sign-in."""
-    flow = st.session_state.get("msal_device_flow")
-    if not isinstance(flow, dict):
-        return False
-
-    verification_uri = (
-        flow.get("verification_uri")
-        or flow.get("verification_url")
-        or "https://microsoft.com/devicelogin"
-    )
-    user_code = str(flow.get("user_code") or "").strip()
-    st.info(f"Open {verification_uri} and enter this code:")
-    if user_code:
-        st.code(user_code)
-
-    complete_col, restart_col = st.columns([1, 1])
-    with complete_col:
-        if st.button("I completed sign-in", type="primary", use_container_width=True):
-            with st.spinner("Checking Microsoft sign-in..."):
-                result = get_all_tokens(prompt_behavior="none")
-                if result:
-                    st.session_state.auth_bundle = result
-                    st.session_state.workflow_mode = "landing"
-                    st.rerun()
-    with restart_col:
-        if st.button("Restart sign-in", use_container_width=True):
-            st.session_state.pop("msal_device_flow", None)
-            st.rerun()
-
-    return True
 
 
 def _set_workflow(mode):
@@ -261,6 +241,10 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
             unsafe_allow_html=True,
         )
 
+        setup_state = render_connection_sidebar()
+        powerbi_connected = powerbi_is_ready(setup_state)
+        snowflake_connected = snowflake_is_ready(setup_state)
+
         st.markdown('<div class="lineage-nav-label">Navigation</div>', unsafe_allow_html=True)
 
         report_context = st.session_state.get("direct_measure_active_context")
@@ -274,25 +258,33 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
             ("Measure Impact", "measure_impact", "functions", None),
         ]
         for label, mode, icon, context in nav_items:
-            st.markdown(
-                _navigation_link(
-                    label,
-                    mode,
-                    icon,
-                    active=(active_destination == mode),
-                    context=context,
-                ),
-                unsafe_allow_html=True,
-            )
+            if st.button(
+                label,
+                key=f"sidebar_nav_{mode}",
+                icon=f":material/{icon}:",
+                type="primary" if active_destination == mode else "secondary",
+                use_container_width=True,
+                disabled=mode != "landing" and not powerbi_connected,
+            ):
+                st.session_state.workflow_mode = mode
+                _replace_workflow_query_params(mode, context)
+                st.rerun()
 
         st.markdown(
-            """
+            f"""
             <div class="lineage-sidebar-separator"></div>
             <div class="lineage-sidebar-status">
-                <span class="app-status-dot"></span>
+                <span class="app-status-dot" style="background:{'#16a34a' if powerbi_connected else '#94a3b8'};box-shadow:{'0 0 0 3px #dcfce7' if powerbi_connected else '0 0 0 3px #e2e8f0'}"></span>
                 <span>
-                    <strong>Connected</strong>
-                    <small>Power BI session active</small>
+                    <strong>Power BI {'connected' if powerbi_connected else 'not connected'}</strong>
+                    <small>Microsoft browser session</small>
+                </span>
+            </div>
+            <div class="lineage-sidebar-status">
+                <span class="app-status-dot" style="background:{'#16a34a' if snowflake_connected else '#94a3b8'};box-shadow:{'0 0 0 3px #dcfce7' if snowflake_connected else '0 0 0 3px #e2e8f0'}"></span>
+                <span>
+                    <strong>Snowflake {'connected' if snowflake_connected else 'not connected'}</strong>
+                    <small>Database browser SSO</small>
                 </span>
             </div>
             """,
@@ -300,7 +292,7 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
         )
 
         if st.button(
-            "Logout",
+            "Clear session",
             key="top_logout",
             icon=":material/logout:",
             use_container_width=True,
@@ -312,54 +304,6 @@ def render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, 
                     st.error(f"Error releasing tokens: {e}")
                     clear_streamlit_session_state(keep_auth=False)
                 st.rerun()
-
-
-def render_login_page(clear_streamlit_session_state, get_all_tokens):
-    """Render the external authentication entry point."""
-    spacer_left, login_col, spacer_right = st.columns([0.16, 1, 0.16])
-    with login_col:
-        with st.container(border=True):
-            st.markdown(
-                """
-                <div class="page-header centered">
-                    <div class="page-eyebrow">Authentication</div>
-                    <h1>PBI Lineage Explorer</h1>
-                    <p>
-                        Sign in with your organization account. Authentication opens the Microsoft identity
-                        flow, validates the credentials, and returns you to this app when the token is available.
-                    </p>
-                </div>
-                <div class="auth-step-table">
-                    <div class="auth-step-cell">
-                        <strong>1. Authenticate</strong>
-                        <span>Use the external Microsoft sign-in flow.</span>
-                    </div>
-                    <div class="auth-step-cell">
-                        <strong>2. Choose Flow</strong>
-                        <span>Pick guided exploration or direct measure lookup.</span>
-                    </div>
-                    <div class="auth-step-cell">
-                        <strong>3. Analyze</strong>
-                        <span>Review definitions, source lineage, and Snowflake lineage.</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown('<div class="auth-action-spacer"></div>', unsafe_allow_html=True)
-            if _render_pending_device_flow(get_all_tokens):
-                return
-
-            action_left, action_col, action_right = st.columns([1, 1.4, 1])
-            with action_col:
-                if st.button("Continue to sign in", type="primary", use_container_width=True):
-                    clear_streamlit_session_state(keep_auth=False)
-                    with st.spinner("Opening external authentication..."):
-                        result = get_all_tokens(prompt_behavior="select_account")
-                        if result:
-                            st.session_state.auth_bundle = result
-                            st.session_state.workflow_mode = "landing"
-                            st.rerun()
 
 
 def _inventory_summary_html(workspaces, reports):
@@ -416,6 +360,7 @@ def _auth_cache_fingerprint(headers):
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def _load_accessible_inventory_cached(
     token_fingerprint,
+    scope_fingerprint,
     _headers,
     _get_workspace_inventory,
     _get_artifacts,
@@ -459,17 +404,29 @@ def _clear_accessible_inventory_cache():
 def get_accessible_inventory(headers, get_workspace_inventory, get_artifacts):
     """Load the allowed workspace/report inventory used throughout the application."""
     cache_key = "accessible_lineage_inventory_v4"
+    provenance_key = "accessible_lineage_inventory_provenance_v1"
+    provenance = "|".join(
+        [
+            _auth_cache_fingerprint(headers),
+            powerbi_scope_fingerprint(st.session_state.get(SETUP_STATE_KEY) or {}),
+        ]
+    )
     cached = st.session_state.get(cache_key)
-    if isinstance(cached, dict):
+    if (
+        isinstance(cached, dict)
+        and st.session_state.get(provenance_key) == provenance
+    ):
         return cached
 
     inventory = _load_accessible_inventory_cached(
-        _auth_cache_fingerprint(headers),
+        provenance.split("|", 1)[0],
+        provenance.split("|", 1)[1],
         headers,
         get_workspace_inventory,
         get_artifacts,
     )
     st.session_state[cache_key] = inventory
+    st.session_state[provenance_key] = provenance
     st.session_state["direct_lookup_report_records_v3"] = inventory.get("reports") or []
     return inventory
 
@@ -484,8 +441,15 @@ def render_workflow_choice_page(
 ):
     """Render the authenticated search-first lineage home."""
     render_app_top_bar(logout_and_clear_session, clear_streamlit_session_state, "Home")
-    with st.spinner("Loading your Power BI inventory..."):
-        inventory = get_accessible_inventory(headers, get_workspace_inventory, get_artifacts)
+    powerbi_connected = powerbi_is_ready(st.session_state.get(SETUP_STATE_KEY))
+    scope_warning = st.session_state.pop("powerbi_scope_warning_v1", None)
+    if scope_warning:
+        st.warning(str(scope_warning))
+    if powerbi_connected:
+        with st.spinner("Loading your Power BI inventory..."):
+            inventory = get_accessible_inventory(headers, get_workspace_inventory, get_artifacts)
+    else:
+        inventory = {"workspaces": [], "reports": []}
     workspaces = inventory.get("workspaces") or []
     reports = inventory.get("reports") or []
 
@@ -499,6 +463,11 @@ def render_workflow_choice_page(
         """,
         unsafe_allow_html=True,
     )
+    if not powerbi_connected:
+        st.info(
+            "The Home page is ready. Connect Power BI from the sidebar to load inventory "
+            "and enable lineage navigation. Snowflake can be connected separately."
+        )
 
     search_space, search_col, search_action, search_tail = st.columns([0.8, 5.8, 1.2, 0.8], vertical_alignment="bottom")
     with search_col:
@@ -512,7 +481,12 @@ def render_workflow_choice_page(
             label_visibility="collapsed",
         ) if reports else None
     with search_action:
-        if st.button("Search", type="primary", use_container_width=True, disabled=not reports):
+        if st.button(
+            "Search",
+            type="primary",
+            use_container_width=True,
+            disabled=not powerbi_connected or not reports,
+        ):
             if selected_report_index is None:
                 st.warning("Select a report from the search results.")
             else:
@@ -524,7 +498,11 @@ def render_workflow_choice_page(
     with section_title_col:
         st.markdown('<div class="section-heading"><strong>Quick actions</strong><span>Start with the task you need.</span></div>', unsafe_allow_html=True)
     with refresh_col:
-        if st.button("Refresh inventory", use_container_width=True):
+        if st.button(
+            "Refresh inventory",
+            use_container_width=True,
+            disabled=not powerbi_connected,
+        ):
             _clear_accessible_inventory_cache()
             st.session_state[_SHARED_APP_CACHE_CLEAR_REQUEST_KEY] = True
             st.session_state.pop("accessible_lineage_inventory_v4", None)
@@ -551,12 +529,21 @@ def render_workflow_choice_page(
                     """,
                     unsafe_allow_html=True,
                 )
-                if st.button(button_label, key=f"home_action_{number}", use_container_width=True):
+                if st.button(
+                    button_label,
+                    key=f"home_action_{number}",
+                    use_container_width=True,
+                    disabled=not powerbi_connected,
+                ):
                     _set_workflow(mode)
 
     st.markdown('<div class="section-heading report-section-heading"><strong>Accessible reports</strong><span>Open a report directly in report lineage analysis.</span></div>', unsafe_allow_html=True)
     if not reports:
-        st.info("No accessible reports were returned for this account.")
+        st.info(
+            "Connect Power BI from the sidebar to load accessible reports."
+            if not powerbi_connected
+            else "No accessible reports were returned for this account."
+        )
     else:
         report_columns = st.columns(2)
         for index, record in enumerate(reports[:6]):

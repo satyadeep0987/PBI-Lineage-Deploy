@@ -235,19 +235,22 @@ def resolve_claude_settings(
 ) -> Dict[str, Any]:
     """Return validated settings for the direct Anthropic API."""
     configured = dict(settings or {})
-    environment_key = str(os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    session_only = bool(configured.get("_session_only_config", False))
+    environment_key = (
+        "" if session_only else str(os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    )
     api_key = str(configured.get("api_key") or environment_key).strip()
     model = str(
-        os.getenv("CLAUDE_MODEL")
+        (None if session_only else os.getenv("CLAUDE_MODEL"))
         or configured.get("model")
         or DEFAULT_CLAUDE_MODEL
     ).strip()
     base_url = str(
-        os.getenv("CLAUDE_BASE_URL")
+        (None if session_only else os.getenv("CLAUDE_BASE_URL"))
         or configured.get("base_url")
         or DEFAULT_CLAUDE_BASE_URL
     ).strip().rstrip("/")
-    environment_enabled = os.getenv("CLAUDE_ENABLED")
+    environment_enabled = None if session_only else os.getenv("CLAUDE_ENABLED")
     enabled = _as_bool(
         environment_enabled
         if environment_enabled is not None
@@ -257,11 +260,11 @@ def resolve_claude_settings(
 
     if require_enabled and not enabled:
         raise ClaudeConfigurationError(
-            "Enable the claude section in app settings or Streamlit Secrets."
+            "Enable PowerAI in the connection sidebar."
         )
     if not api_key:
         raise ClaudeConfigurationError(
-            "Missing Claude API key. Configure claude.api_key or ANTHROPIC_API_KEY."
+            "Missing Claude API key. Enter it in the connection sidebar."
         )
     if not model:
         raise ClaudeConfigurationError("Missing claude.model.")
