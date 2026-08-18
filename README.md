@@ -154,6 +154,7 @@ verification.
 - [Application context](APP_CONTEXT.md)
 - [Session-only setup and SSO](docs/SESSION_SETUP_AND_SSO.md)
 - [Deployment plan](docs/DEPLOYMENT_PLAN.md)
+- [Organization deployment approval package](docs/ORG_DEPLOYMENT_APPROVAL_PACKAGE.md)
 - [Architecture and flow diagram](docs/PBI_LINEAGE_APPLICATION_ARCHITECTURE_AND_FLOW.drawio)
 - [PowerAI implementation](docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md)
 - [PowerAI managed-agent guide](docs/CLAUDE_MULTI_AGENT_GUIDE.md)
