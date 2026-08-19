@@ -1,127 +1,115 @@
-# PBI Lineage Explorer - Streamlit Cloud Deploy
+# PBI Lineage Explorer
 
-This folder is a clean repository root for deploying the Streamlit app from:
+PBI Lineage Explorer is an enterprise Streamlit application for exploring Power
+BI and Fabric lineage across reports, semantic models, source systems,
+Snowflake objects, visual metadata, and AI-assisted impact analysis.
+
+The application should run as a Streamlit process, but the full project is not
+a fit for Streamlit Community Cloud. Full semantic-model lineage depends on
+Windows COM, `pywin32`, and the Microsoft Analysis Services OLE DB Provider
+(`MSOLAP`). Streamlit Community Cloud runs on Linux, so the full XMLA path must
+be hosted on Windows or moved behind a separate Windows service.
+
+## Deployment Decision
+
+Use an Azure Windows Server VM for the first full-feature deployment.
+
+| Target | Status | Reason |
+| --- | --- | --- |
+| Azure Windows Server VM | Recommended | Supports Streamlit, `pywin32`, COM, MSOLAP, XMLA, Fabric REST, Snowflake, and PowerAI/Claude features without a UI rewrite. |
+| Streamlit Community Cloud | Not supported for full app | Linux runtime cannot install or execute Windows-only `pywin32`/COM/MSOLAP dependencies. |
+| Azure App Service built-in Python | Not supported for full app | Built-in Python on App Service is Linux-only; Python on Windows is not supported by the managed runtime. |
+| Linux UI plus private Windows XMLA API | Future scale path | Good long-term architecture after the current app is stable and XMLA calls are isolated behind a bounded internal service. |
+
+## Project Context
+
+The repository has been organized as a deployable application root:
 
 ```text
-C:\Users\Administrator\Desktop\PBI-Lineage\streamlit_app\streamlit_app.py
-```
-
-In this deploy repo, the app entrypoint is:
-
-```text
-streamlit_app.py
-```
-
-## Included Files
-
-```text
-deploy/
+PBI-Lineage-Deploy/
 |-- streamlit_app.py
 |-- utils.py
 |-- xmla_ado_com.py
+|-- tls_trust.py
+|-- requirements.txt
 |-- pbi_modules/
 |-- config/
-|   |-- app_settings.template.json
-|   `-- powerbi_auth_config.template.json
 |-- .streamlit/
-|   |-- config.toml
-|   `-- secrets.toml.example
-|-- requirements.txt
-|-- .gitignore
+|-- docs/
+|-- demo_packages/
+|-- Images/
+|-- presentations/
+|-- Test/
 `-- README.md
 ```
 
-No filled credential file is included. Keep real secrets out of Git.
+Folder and file responsibilities:
 
-## Deploy On Streamlit Community Cloud
+| Path | Purpose |
+| --- | --- |
+| `streamlit_app.py` | Main Streamlit entry point, authentication flow, routing, Power BI/Fabric API calls, XMLA lineage, report-definition parsing, Snowflake lineage, exports, and PowerAI workspace integration. |
+| `pbi_modules/` | Shared UI shell, controls, Claude/PowerAI agent orchestration, Markdown analysis export helpers, and table-impact helpers. |
+| `utils.py` | Configuration loader for JSON files, environment variables, and Streamlit secrets. |
+| `xmla_ado_com.py` | Windows-only XMLA connector using ADO COM, `pywin32`, and MSOLAP. |
+| `tls_trust.py` | TLS trust-store and custom CA bundle support for corporate Windows environments. |
+| `config/` | Safe template files for Power BI auth and app settings. Filled JSON files are intentionally ignored by Git. |
+| `.streamlit/` | Streamlit runtime config and secrets example. Real `.streamlit/secrets.toml` is ignored. |
+| `docs/` | Architecture, deployment plan, Claude/PowerAI setup, user-experience coverage, and admin/provisioning references. |
+| `demo_packages/` | Isolated Snowflake-to-Power BI ten-level lineage demo with CSVs, SQL, DAX, Power BI build guide, and presenter runbooks. |
+| `Images/` | Architecture and flow images used for explanation or presentation. |
+| `presentations/` | PowerPoint decks and preview images for stakeholder walkthroughs. |
+| `Test/` | Unit and demo tests for Claude, lineage display, impact suggestions, PowerAI diagrams, Snowflake procedures, and workspace filtering. |
+| `.venv/`, `__pycache__/`, `.git/` | Local environment/generated folders; do not deploy or document as product source. |
 
-1. Create a new GitHub repository using the contents of this `deploy/` folder.
-2. Go to <https://share.streamlit.io/deploy>.
-3. Select the repository and branch.
-4. Set the app file path to `streamlit_app.py`.
-5. Open **Advanced settings**.
-6. Select Python `3.11` to match the current local development environment.
-7. Paste filled secrets from `.streamlit/secrets.toml.example`.
-8. Deploy the app.
+## What The App Does
 
-Streamlit Community Cloud runs apps from the repository root and installs Python dependencies from `requirements.txt`. Its docs also note that the entrypoint path should use forward slashes when the app is in a subfolder. This package avoids that by placing `streamlit_app.py` at the repo root.
+- Authenticates users with Microsoft Entra ID and Power BI/Fabric delegated
+  scopes.
+- Lists accessible Power BI workspaces, reports, apps, dashboards, semantic
+  models, and access metadata.
+- Resolves report-to-semantic-model context for workspace and app artifacts.
+- Reads semantic model tables, columns, measures, DAX, relationships, and
+  dependencies through XMLA.
+- Retrieves Fabric/Power BI report definitions to parse pages, visuals, visual
+  fields, roles, and visual-to-source lookup evidence.
+- Runs table and measure impact analysis across authorized reports and models.
+- Connects optional Snowflake lineage for physical object and column tracing.
+- Provides a read-only PowerAI/Claude lineage agent that uses bounded local
+  tools and never receives raw Power BI, Fabric, Snowflake, or Entra secrets.
+- Exports CSVs and report-detail ZIP/Markdown packages for audit and handoff.
 
-References:
-- <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/file-organization>
-- <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies>
-- <https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management>
-- <https://learn.microsoft.com/en-us/rest/api/fabric/report/items/get-report-definition>
-- <https://learn.microsoft.com/en-us/rest/api/fabric/articles/scopes>
+## Runtime Requirements
 
-## Configuration Model
+For the full feature set:
 
-The deploy app can read configuration from three places:
+- Azure Windows Server 2022 or later, sized for expected concurrent users.
+- Python 3.11 64-bit.
+- Microsoft Analysis Services OLE DB Provider (`MSOLAP`) installed on the
+  Windows host.
+- Power BI/Fabric tenant and workspace permissions for the selected reports and
+  semantic models.
+- XMLA endpoint enabled for the target Power BI Premium, Premium Per User, or
+  Fabric capacity/workspace scenario.
+- Outbound HTTPS access to Microsoft Entra ID, Power BI, Fabric, Snowflake, and
+  the approved AI provider when those features are enabled.
+- No production secrets committed to Git.
 
-1. Streamlit Cloud secrets, preferably the `[powerbi]` TOML section shown below.
-2. Environment variables or root-level Streamlit secrets such as `PBI_TENANT_ID`.
-3. Local JSON files, for local-only development.
+Python dependencies are installed from `requirements.txt`. `pywin32` is guarded
+with a Windows platform marker, but XMLA features still need a Windows runtime.
 
-For Streamlit Cloud, use secrets instead of committing filled JSON files.
+## Local Windows Run
 
-### Power BI Auth
+Run from the repository root:
 
-Paste this into **Streamlit Community Cloud > App settings > Secrets**:
-
-```toml
-[powerbi]
-auth_flow = "device_code"
-tenant_id = "<tenant-id>"
-client_id = "<entra-app-registration-client-id>"
-authority = "https://login.microsoftonline.com/<tenant-id>"
-scopes = [
-  "https://analysis.windows.net/powerbi/api/App.Read.All",
-  "https://analysis.windows.net/powerbi/api/Report.Read.All",
-  "https://analysis.windows.net/powerbi/api/Dashboard.Read.All",
-  "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
-  "https://analysis.windows.net/powerbi/api/Workspace.Read.All",
-  "https://analysis.windows.net/powerbi/api/Tenant.Read.All",
-]
-fabric_scopes = [
-  "https://api.fabric.microsoft.com/Report.ReadWrite.All",
-]
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run streamlit_app.py
 ```
 
-`auth_flow = "device_code"` is the default for this deploy package. The user clicks sign in, opens Microsoft device login, enters the shown code, and then returns to the app.
-
-The deploy app also accepts root-level names like `PBI_TENANT_ID`, `PBI_CLIENT_ID`, `PBI_AUTHORITY`, and `PBI_SCOPES`.
-
-Your Entra App Registration should allow public client/device-code sign-in and have the delegated Power BI API permissions needed by your workspace reports. Grant delegated `Report.ReadWrite.All` consent for the Fabric API so the app can call Get Report Definition. Keep Fabric scopes separate from the Power BI scopes because the APIs use different token audiences. The default MasterUser login does not require a client secret.
-
-### App Settings
-
-Safe defaults live in:
-
-```text
-config/app_settings.template.json
-```
-
-On Streamlit Cloud, override values through secrets sections:
-
-```toml
-[claude]
-enabled = true
-api_key = "<anthropic-api-key>"
-base_url = "https://api.anthropic.com"
-model = "claude-sonnet-4-6"
-max_tool_rounds = 6
-
-[snowflake_lineage]
-enabled = true
-account = "<snowflake-account>"
-user = "<snowflake-user>"
-password = "<snowflake-password>"
-role = "<role>"
-warehouse = "<warehouse>"
-database = "<database>"
-schema = "<schema>"
-```
-
-For local-only testing, you may create these ignored files:
+Before starting the app, configure one of these ignored local secret sources:
 
 ```text
 config/powerbi_auth_config.json
@@ -129,85 +117,237 @@ config/app_settings.json
 .streamlit/secrets.toml
 ```
 
-Do not commit those filled files.
+Use the provided templates:
 
-### Claude Lineage Agent
-
-**Claude Agent** is the first destination in the authenticated sidebar. It can
-use direct Anthropic tool calling or Claude Managed Agents over the signed-in
-user's authorized workspace scope. Broad questions search a cached estate index containing reports,
-semantic objects, source lineage, measure dependencies, and available visual
-metadata in one request. The agent can then inspect a report, run measure/table
-impact, or trace configured Snowflake lineage. All tools are read-only, and the
-first model turn must select a lineage tool before answering.
-
-The default **Auto** strategy uses one general agent for simple questions. For
-cross-system questions, it shares one cached evidence index with only the
-needed Power BI, visual, Snowflake, and impact specialists, then returns one
-coordinated answer within the configured token and estimated-cost guard.
-
-To use Managed Agents created in Claude Console, set
-`agent_runtime = "managed"` and paste the shared `env_...` identifier and the
-role-specific `agent_...` identifiers into `[claude.managed_agents]` in the
-same secret store as the API key. The exact block and required custom-tool
-setup are in [the Claude Multi-Agent guide](docs/CLAUDE_MULTI_AGENT_GUIDE.md#configure-your-existing-claude-managed-agents).
-Keep Power BI, Snowflake, Fabric, and Entra credentials out of Claude Console;
-the application executes its read-only tools locally and returns only bounded
-results to the agent.
-
-See [`docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md`](docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md)
-for the change inventory, tool contract, security controls, hosting setup, and
-validation checklist. See [`docs/CLAUDE_MULTI_AGENT_GUIDE.md`](docs/CLAUDE_MULTI_AGENT_GUIDE.md)
-for setup, routing behavior, budgets, detailed function references, and outputs.
-For every Claude configuration field and recommended efficiency profiles, see
-[`docs/CLAUDE_CONFIGURATION_REFERENCE.md`](docs/CLAUDE_CONFIGURATION_REFERENCE.md).
-
-## Local Test
-
-From this folder:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run streamlit_app.py
+```text
+config/powerbi_auth_config.template.json
+config/app_settings.template.json
+.streamlit/secrets.toml.example
 ```
 
-Before running locally, fill either `.streamlit/secrets.toml` or local JSON config files.
+## Configuration Model
 
-On Windows, `requirements.txt` installs `pywin32` through a platform-specific marker. XMLA lineage also requires the Microsoft Analysis Services OLE DB Provider (MSOLAP) on the machine.
+The app reads configuration in this order:
 
-### TLS Certificate Errors on Windows
+1. Built-in safe defaults.
+2. Template/default files under `config/`.
+3. Optional local JSON files under `config/`.
+4. Environment variables and Streamlit secrets.
 
-The app uses the operating system certificate store through `truststore`. After moving the app to another machine, install the complete requirements before starting Streamlit:
+Important environment variable names include:
+
+```text
+PBI_TENANT_ID
+PBI_CLIENT_ID
+PBI_AUTHORITY
+PBI_SCOPES
+PBI_FABRIC_SCOPES
+ANTHROPIC_API_KEY
+CLAUDE_ENABLED
+CLAUDE_MODEL
+PBI_CA_BUNDLE
+REQUESTS_CA_BUNDLE
+```
+
+Keep filled files and secrets out of source control. The `.gitignore` already
+excludes local config, secrets, caches, exports, logs, and virtual environments.
+
+## Azure Windows Server Deployment
+
+This is the recommended production deployment for the current codebase.
+
+### 1. Provision Azure Resources
+
+Create:
+
+- Resource group for the application environment.
+- Private virtual network and subnet.
+- Windows Server VM with managed disk and system-assigned managed identity.
+- Network security group with no public inbound access to Streamlit port `8501`.
+- Azure Key Vault for secrets and certificates.
+- Log Analytics workspace or Application Insights for operational telemetry.
+- Azure Application Gateway WAF, Microsoft Entra Application Proxy, or an
+  approved enterprise reverse proxy for HTTPS publishing.
+
+Use a private DNS name or custom domain for the application. Do not expose the
+raw Streamlit process directly to the internet.
+
+### 2. Prepare The Windows VM
+
+Install on the VM:
+
+- Python 3.11 64-bit.
+- Git or your approved artifact deployment agent.
+- Microsoft Analysis Services OLE DB Provider (`MSOLAP`) amd64.
+- Any corporate root CA certificate required for TLS inspection.
+- Monitoring, endpoint protection, and patch-management agents required by the
+  Azure baseline.
+
+Clone or copy the repo to a stable path such as:
+
+```text
+C:\apps\pbi-lineage-explorer
+```
+
+Install the app:
+
+```powershell
+cd C:\apps\pbi-lineage-explorer
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 3. Configure Secrets
+
+Recommended production pattern:
+
+- Store tenant IDs, client IDs, client secrets, Snowflake credentials, Claude
+  keys, and CA bundle paths in Azure Key Vault or the enterprise secret manager.
+- Grant the VM managed identity access only to the required secrets.
+- Materialize secrets as locked-down environment variables at service startup,
+  or generate a protected `.streamlit/secrets.toml` readable only by the service
+  identity.
+- Rotate any secret that was ever copied into a local shared file.
+
+The app can use device-code delegated auth for user-scoped access or configured
+service-principal settings where tenant policy allows it. Validate the selected
+mode with a normal analyst account and a restricted analyst account before
+go-live.
+
+### 4. Run Streamlit As A Service
+
+Run the Streamlit app under a dedicated non-admin Windows service account.
+
+For a same-VM reverse proxy, bind Streamlit to localhost:
+
+```powershell
+C:\apps\pbi-lineage-explorer\.venv\Scripts\python.exe -m streamlit run C:\apps\pbi-lineage-explorer\streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+```
+
+For Azure Application Gateway connecting directly to the VM backend, bind
+Streamlit to the VM private interface and allow port `8501` only from the
+Application Gateway subnet.
+
+Configure the Windows service or approved service wrapper with:
+
+- Automatic start.
+- Restart on failure.
+- Working directory set to the repository root.
+- Environment variables loaded before process start.
+- Log redirection to an approved local path or collector.
+
+### 5. Publish The HTTPS Endpoint
+
+Use one of these patterns:
+
+- Azure Application Gateway WAF with TLS certificate, custom domain, WebSocket
+  support, and backend routing to the VM private address.
+- Microsoft Entra Application Proxy with Entra pre-authentication and
+  Conditional Access for a private internal-style application.
+- Enterprise reverse proxy/IIS in front of the localhost Streamlit process,
+  provided WebSocket upgrade traffic is supported.
+
+Required controls:
+
+- Entra assignment required for the enterprise app.
+- Access granted by security groups such as `PBI-Lineage-Explorer-Users` and
+  `PBI-Lineage-Explorer-Admins`.
+- MFA and Conditional Access enabled.
+- No anonymous public access.
+- Inbound network access limited to the proxy path.
+- Outbound egress limited to required Microsoft, Snowflake, AI-provider, package,
+  and monitoring endpoints.
+
+### 6. Validate Go-Live
+
+Test with representative accounts:
+
+- Platform/admin account.
+- Normal authorized analyst.
+- Authorized analyst with limited Power BI access.
+- Unauthorized user.
+
+Smoke-test:
+
+- Microsoft sign-in and logout.
+- Workspace and report inventory.
+- Report lineage.
+- XMLA semantic model objects, relationships, measures, and dependencies.
+- Fabric report-definition retrieval and visual-level lineage.
+- Table impact and measure impact.
+- Snowflake lineage, if enabled.
+- PowerAI/Claude answer generation, if enabled.
+- CSV, ZIP, and Markdown downloads.
+- Service restart and proxy/WebSocket behavior.
+
+## Why Streamlit Community Cloud Is Not The Target
+
+The app imports a Windows XMLA connector and full semantic lineage calls require
+`pywin32`, COM, and MSOLAP. Streamlit documents that Community Cloud runs apps
+in a Linux environment, where `pywin32` fails, and recommends excluding
+`pywin32` or deploying on a cloud service that offers Windows machines.
+
+Some REST-only features can be demonstrated on Linux if XMLA paths are not used,
+but that is not the complete PBI Lineage Explorer product. Production should use
+Azure Windows Server now, then optionally split the architecture later:
+
+```text
+Users
+  -> Entra-protected HTTPS endpoint
+  -> Streamlit UI/API tier
+  -> private Windows XMLA service
+  -> Power BI/Fabric XMLA endpoint
+```
+
+## TLS On Windows
+
+The app uses the operating system certificate store through `truststore`.
+Install the complete requirements before starting Streamlit:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-If the machine is behind an HTTPS-inspecting corporate proxy, install the organization's root CA in the Windows **Trusted Root Certification Authorities** store. When that is not possible, obtain the approved PEM CA chain from your network/security team and set it before starting the app:
+If the VM is behind an HTTPS-inspecting proxy, install the organization root CA
+in the Windows Trusted Root Certification Authorities store. If security policy
+requires a PEM bundle, set it before service startup:
 
 ```powershell
 $env:PBI_CA_BUNDLE = "C:\certificates\organization-ca-chain.pem"
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-`REQUESTS_CA_BUNDLE` is also supported. Do not work around certificate errors with `verify=False`; that disables server identity verification.
+`REQUESTS_CA_BUNDLE` is also supported. Do not bypass TLS verification with
+`verify=False`.
 
-## Important Cloud Limitations
+## Supporting Documentation
 
-Streamlit Community Cloud runs on Linux. The existing `xmla_ado_com.py` helper uses Windows COM, `pywin32`, and the Microsoft MSOLAP provider. `pywin32` cannot be installed or used on Streamlit Community Cloud, so XMLA-dependent semantic lineage features require either a Windows deployment host or a separate Windows backend service. Do not add unqualified `pywin32` to `requirements.txt` for Streamlit Cloud because Linux dependency installation will fail.
+- [Deployment plan](docs/DEPLOYMENT_PLAN.md)
+- [Claude agentic AI implementation](docs/CLAUDE_AGENTIC_AI_IMPLEMENTATION.md)
+- [Claude multi-agent guide](docs/CLAUDE_MULTI_AGENT_GUIDE.md)
+- [Claude configuration reference](docs/CLAUDE_CONFIGURATION_REFERENCE.md)
+- [User experience, KPI demo, and functional coverage](docs/USER_EXPERIENCE_KPI_DEMO_AND_FUNCTIONAL_COVERAGE.md)
+- [Snowflake to Power BI ten-level lineage demo](demo_packages/snowflake_powerbi_10_level_lineage/README.md)
 
-REST-based Power BI inventory, report/app listing, Fabric report-definition retrieval, visual-layout parsing, CSV downloads, manual layout uploads, direct Claude measure explanations, the Claude Lineage Agent, and Snowflake connector features are packaged for cloud use, subject to your tenant permissions and network access. Report definitions use `api.fabric.microsoft.com` and do not require Windows, `pywin32`, MSOLAP, or full PBIX download permission. XMLA-backed Claude tools still require the Windows XMLA execution path.
+## Official References
 
-## Git Push
+- Streamlit dependency guidance:
+  <https://docs.streamlit.io/deploy/concepts/dependencies>
+- Streamlit `pywin32` / Linux Community Cloud limitation:
+  <https://docs.streamlit.io/knowledge-base/dependencies/no-matching-distribution>
+- Streamlit secrets management:
+  <https://docs.streamlit.io/deploy/concepts/secrets>
+- Azure App Service Python runtime guidance:
+  <https://learn.microsoft.com/en-us/azure/app-service/configure-language-python>
+- Azure Application Gateway WebSocket support:
+  <https://learn.microsoft.com/en-us/azure/application-gateway/application-gateway-websocket>
+- Microsoft Entra Application Proxy security:
+  <https://learn.microsoft.com/en-us/entra/identity/app-proxy/application-proxy-security>
+- Windows VM managed identity with Key Vault:
+  <https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/tutorial-windows-managed-identities-vm-access>
+- Analysis Services client libraries and MSOLAP:
+  <https://learn.microsoft.com/en-us/analysis-services/client-libraries>
+- Power BI/Fabric XMLA endpoint:
+  <https://learn.microsoft.com/en-us/fabric/enterprise/powerbi/service-premium-connect-tools>
 
-```powershell
-cd C:\Users\Administrator\Desktop\PBI-Lineage-Deploy
-git init
-git add .
-git commit -m "Prepare Streamlit Cloud deployment"
-git branch -M main
-git remote add origin <your-new-github-repo-url>
-git push -u origin main
-```
